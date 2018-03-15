@@ -8,7 +8,7 @@ import play.api.libs.json.{Format, Json,JsObject,Reads,Writes}
 //import com.lightbend.lagom.scaladsl.persistence.PersistentEntity.ReplyType
 //import com.lightbend.lagom.scaladsl.playjson.{JsonSerializerRegistry, JsonSerializer}
 
-object GenericModel {
+object GenericModel2 {
   
   
   trait Entity {self => 
@@ -61,6 +61,9 @@ object GenericModel {
   
   sealed trait ModelCommand[R] //extends ReplyType[R]
   
+  case class EntityExistsCommand[E<:Entity](entity:E,entityInstance:String,prov:Provenance) extends ModelCommand[Unit] 
+  case class EntityNotExistsCommand[E<:Entity](entity:E,entityInstance:String,prov:Provenance) extends ModelCommand[Unit] 
+  
   case class SetEntityPropertyCommand[E<:Entity,V](entity:E,entityInstance:String,property:E#EntityProperty[V],value:V,prov:Provenance)
   extends ModelCommand[Unit] 
   case class UnsetEntityPropertyCommand[E<:Entity,V](entity:E,entityInstance:String,property:E#EntityProperty[V],prov:Provenance)
@@ -93,40 +96,64 @@ object GenericModel {
   
   
   
+  case class EntityInstance(id:String,properties:Map[Entity#EntityProperty[_],_]) {
+    def set[V](p:Entity#EntityProperty[V],v:V)=copy(properties=properties.updated(p, v))
+    def unset(p:Entity#EntityProperty[_])=copy(properties=properties - p)
+    def add[V](p:Entity#EntityProperty[Seq[V]],v:V)=copy(properties=properties.updated(p, properties.getOrElse(p, Seq.empty).asInstanceOf[Seq[_]] :+ v))
+    def remove(p:Entity#EntityProperty[Seq[_]],remIdx:Int)=copy(properties=properties.updated(p, properties.getOrElse(p, Seq.empty).asInstanceOf[Seq[_]].zipWithIndex.collect{case (v,idx) if  idx != remIdx => v}))
+    
+  }
+  
+  sealed trait ModelCommandFailure
+  case class EntityNotExists[E<:Entity](e:E,id:String) extends ModelCommandFailure
+  case class EntityAlreadyExists[E<:Entity](e:E,id:String) extends ModelCommandFailure
   
   case class Model(
-      entities : Map[Entity,Map[String,Map[Entity#EntityProperty[_],_]]] //,
+      entities : Map[Entity,Map[String,EntityInstance]] //,
 //      entities2 : Map[Entity,Map[Entity#Instance,Map[Entity#EntityReferenceProperty[_,_],Entity#EntityPropertyWithValue[_]]]]
     ) {
     case class entity[E<:Entity](val e:E) {def instance(i:String)=entityInstance(e,i)}
-    case class entityInstance[E<:Entity](val e:E,i:String) {def getProp[V](prop:e.EntityProperty[V])=Model.this.getProp[E,V](e,i,prop)}
+    case class entityInstance[E<:Entity](val e:E,i:String) {
+      def getProp[V](prop:e.EntityProperty[V])=Model.this.getProp[E,V](e,i,prop)
+      def getRef[R<:Entity](r:R,prop:e.EntityProperty[String])=Model.this.getRef[E,R](e,i,r,prop)      
+    }
     
     def getProp[E<:Entity,V](e:E,p:String,prop:E#EntityProperty[V])=
       entities.get(e)
-      .flatMap(_.get(p).flatMap(_.get(prop).map{_.asInstanceOf[V]}))
-    def getRef[E<:Entity,R<:Entity,V](e:E,r:R,p:String,prop:E#EntityReferenceProperty[R,V])=
-      entities.get(e).flatMap(_.get(p).flatMap(_.get(prop).map{_.asInstanceOf[V]}))
-      .flatMap(prop.prop.encode)
-      .flatMap(rr=>entities.get(e).flatMap(_.get(rr)))
-//      .map(_.asInstanceOf[e.EntityReferenceValue[R,V]])
+      .flatMap(_.get(p).flatMap(_.properties.get(prop).map{_.asInstanceOf[V]}))
+    def getRef[E<:Entity,R<:Entity](e:E,p:String,r:R,prop:E#EntityProperty[String])=
+      getProp(e,p,prop)
+      .flatMap(refId => entities.get(r).flatMap(_.get(refId)))
+//    def getRef[E<:Entity,R<:Entity,V](e:E,r:R,p:String,prop:E#EntityReferenceProperty[R,V])=
+//      entities.get(e).flatMap(_.get(p).flatMap(_.get(prop).map{_.asInstanceOf[V]}))
+//      .flatMap(prop.prop.encode)
+//      .flatMap(rr=>entities.get(e).flatMap(_.get(rr)))
+////      .map(_.asInstanceOf[e.EntityReferenceValue[R,V]])
         
-    def updateEntityInstance[E<:Entity](entity:E,id:String,transform:Map[Entity#EntityProperty[_],_] => Map[Entity#EntityProperty[_],_])= {
-      val currentInstanceMap=entities.getOrElse(entity, Map.empty)
-      val currentPropsMap=currentInstanceMap.getOrElse(id, Map.empty)
-      copy(entities=
-        entities.updated(entity,currentInstanceMap.updated(id, transform(currentPropsMap)))
+    def updateExistingEntityInstance[E<:Entity](entity:E,id:String,transform:EntityInstance => EntityInstance)= {
+      entities.get(entity).flatMap(_.get(id))
+      .map(current => 
+        copy(entities=entities.updated(entity,entities(entity).updated(id, transform(current))))
       )
     }
     
     def apply(cmd:ModelCommand[_])=cmd match {
+      case cmd @ EntityExistsCommand(entity,id,prov) =>
+        val currentInstanceMap=entities.getOrElse(entity, Map.empty)
+        if (currentInstanceMap contains id) Left(EntityAlreadyExists(entity,id))
+        else Right(copy(entities=entities.updated(entity, currentInstanceMap + (id -> EntityInstance(id,Map.empty))))) 
+      case cmd @ EntityNotExistsCommand(entity,id,prov) =>
+        val currentInstanceMap=entities.getOrElse(entity, Map.empty)
+        if (currentInstanceMap contains id) Right(copy(entities=entities.updated(entity, currentInstanceMap - id))) 
+        else Left(EntityNotExists(entity,id))
       case cmd @ SetEntityPropertyCommand(entity,id,prop,value,prov) =>
-        updateEntityInstance(entity,id,_.updated(prop,value))
+        updateExistingEntityInstance(entity,id,_.set(prop,value)).toRight(EntityNotExists(entity,id))
       case cmd @ UnsetEntityPropertyCommand(entity,id,prop,prov) =>
-        updateEntityInstance(entity,id,_ - prop)
+        updateExistingEntityInstance(entity,id,_.unset(prop)).toRight(EntityNotExists(entity,id))
       case cmd @ AddEntityPropertyCommand(entity,id,prop,value,prov) =>
-        updateEntityInstance(entity,id,cur => cur.updated(prop,cur.getOrElse(prop, Seq.empty).asInstanceOf[Seq[_]] :+ value))
+        updateExistingEntityInstance(entity,id,_.add(prop,value)).toRight(EntityNotExists(entity,id))
       case cmd @ RemoveEntityPropertyCommand(entity,id,prop,remIdx,prov) =>
-        updateEntityInstance(entity,id,cur => cur.updated(prop,cur.getOrElse(prop, Seq.empty).asInstanceOf[Seq[_]].zipWithIndex.collect{case (v,idx) if  idx != remIdx => v}))
+        updateExistingEntityInstance(entity,id,_.remove(prop,remIdx)).toRight(EntityNotExists(entity,id))
     }
     
 //    implicit class RichEntityModel[E<:Entity](entity:E) {
