@@ -15,27 +15,12 @@ object GenericModel2 {
 //    type Instance //<: {def id:String}
     
     final case class EntityProperty[A](prop:ValueProperty[A])
-//    sealed trait EntityProperty[A]{
-//      type PropType <: Property[A]
-//      val prop:PropType
-//      def :=(a:A)= this -> a //new EntityPropertyWithValue(this, a)
-//    }
-//    
-//    final case class EntityValueProperty[A](prop:ValueProperty[A]) extends EntityProperty[A] {
-//      type PropType =ValueProperty[A]
-////      def :=(a:A)= new EntityValuePropertyWithValue(this, a)
-//    }
-//    final case class EntityReferenceProperty[R <: Entity,A](prop:ReferenceProperty[R,A]) extends EntityProperty[A] {
-//      type PropType =ReferenceProperty[R,A]
-////      def :=(a:A)= new EntityReferenceValue(this, a)
-//    }
-    
     sealed case class EntityPropertyWithValue[A](prop:EntityProperty[A],value:A)
-    
-//    sealed case class EntityValuePropertyWithValue[A](prop:EntityProperty[A],value:A)
     def prop[A](prop:ValueProperty[A])=EntityProperty[A](prop)
-//    sealed case class EntityReferencePropertyWithValue[R <: Entity,A](ref:EntityReference[R,A],value:A)
-//    def ref[R <: Entity,A](ref:ReferenceProperty[R,A])=EntityReferenceProperty[R,A](ref)
+    
+    final case class EntityReferenceProperty[R <: Entity,V](prop:ReferenceProperty[R,V])
+    def ref[R <: Entity,V](prop:ReferenceProperty[R,V])=EntityReferenceProperty[R,V](prop)
+    
     final case class EntitySubEntityProperty[S<:Entity](prop:SubEntityProperty[S])
     def subEntity[S<:Entity](prop:SubEntityProperty[S])=EntitySubEntityProperty[S](prop)
   }
@@ -49,6 +34,7 @@ object GenericModel2 {
   trait ReferenceProperty[R <: Entity,V] extends Property[V] {
     val encode : (V) => Option[String]
     val name:String
+    val entity : R
   }
   trait SubEntityProperty[E<:Entity] { //extends Property[]
     val name : String
@@ -65,15 +51,19 @@ object GenericModel2 {
       checkAndAddProp(n,new ValueProperty[A]{implicit val fmt=f;val name=n})
     def subEntity[S<:Entity](e:S,n:String)=
       checkAndAddProp(n,new SubEntityProperty[S]{val entity =e;val name=n})
-    def ref[R <: Entity,A](n:String,enc:A => Option[String])(implicit f:Format[A])=
-      checkAndAddProp(n,new ReferenceProperty[R,A]{implicit val fmt=f;val encode = enc;val name=n})
+    def ref[R <: Entity,A](r:R,n:String,enc:A => Option[String])(implicit f:Format[A])=
+      checkAndAddProp(n,new ReferenceProperty[R,A]{implicit val fmt=f;val entity =r;val encode = enc;val name=n})
   }
-  trait PropertyPath[E<:Entity,V]
-  case class Direct[E<:Entity,V](p:E#EntityProperty[V]) extends PropertyPath[E,V]
-  case class SubPath[E<:Entity,S<:Entity,V](p:E#EntitySubEntityProperty[S],n:PropertyPath[S,V]) extends PropertyPath[E,V]
-  case class SubIndexedPath[E<:Entity,S<:Entity,V](p:E#EntitySubEntityProperty[S],i:Int,n:PropertyPath[S,V]) extends PropertyPath[E,V]
+  sealed trait PropertyPath[E<:Entity,V]{
+    def refEntity:Option[ReferenceProperty[_<:Entity,V]]
+  }
+  case class Direct[E<:Entity,V](p:E#EntityProperty[V]) extends PropertyPath[E,V]{def refEntity=None}
+  case class DirectRef[E<:Entity,R<:Entity,V](p:E#EntityReferenceProperty[R,V]) extends PropertyPath[E,V]{def refEntity=Some(p.prop)}
+  case class SubPath[E<:Entity,S<:Entity,V](p:E#EntitySubEntityProperty[S],n:PropertyPath[S,V]) extends PropertyPath[E,V]{def refEntity=n.refEntity}
+  case class SubIndexedPath[E<:Entity,S<:Entity,V](p:E#EntitySubEntityProperty[S],i:Int,n:PropertyPath[S,V]) extends PropertyPath[E,V]{def refEntity=n.refEntity}
   object PropertyPath {
     implicit def direct[E<:Entity,V](p:E#EntityProperty[V])=Direct(p)
+    implicit def directRef[E<:Entity,R<:Entity,V](p:E#EntityReferenceProperty[R,V])=DirectRef(p)
   }
   /** Property-path construction DSL */
   sealed trait subPathGen[E<:Entity,S<:Entity] {
@@ -134,8 +124,11 @@ object GenericModel2 {
   /**
    * Properties is a map from EntityProperty to Seq of value
    */
-  case class EntityInstance(id:String,propertiesMap:Map[Entity#EntityProperty[_],Seq[_]],subEntitiesMap:Map[Entity#EntitySubEntityProperty[_],Seq[EntityInstance]]) {
-    private def newSubEntity(prop:Entity#EntitySubEntityProperty[_])=EntityInstance(s"${id}_${prop.prop.name}",Map.empty,Map.empty)
+  case class EntityInstance(id:String,
+      propertiesMap:Map[Entity#EntityProperty[_],Seq[_]],
+      referencesMap:Map[Entity#EntityReferenceProperty[_,_],Seq[_]],
+      subEntitiesMap:Map[Entity#EntitySubEntityProperty[_],Seq[EntityInstance]]) {
+    private def newSubEntity(prop:Entity#EntitySubEntityProperty[_])=EntityInstance(s"${id}_${prop.prop.name}",Map.empty,Map.empty,Map.empty)
     private def subEntity[S<:Entity](prop:Entity#EntitySubEntityProperty[S])=subEntitiesMap.get(prop).flatMap(_.headOption).getOrElse(newSubEntity(prop))
     private def updateSubEntity[S<:Entity](prop:Entity#EntitySubEntityProperty[S],update:EntityInstance=>EntityInstance)=
       subEntitiesMap.updated(prop, Seq(update(subEntity(prop))))
@@ -151,21 +144,25 @@ object GenericModel2 {
       case SubIndexedPath(p,i,n) => subEntities(p).drop(i).headOption.getOrElse(newSubEntity(p)).getPropRec(n)
       case SubPath(p,n) => subEntity(p).getPropRec(n)
       case Direct(p) => propertiesMap.getOrElse(p, Seq.empty).map(_.asInstanceOf[V])
+      case DirectRef(p) => referencesMap.getOrElse(p, Seq.empty).map(_.asInstanceOf[V])
     }
     def setPropRec[V](p:PropertyPath[_,V],v:V):EntityInstance=p match {
       case SubIndexedPath(p,i,n) => copy(subEntitiesMap=updateSubEntity(p,i,_.setPropRec(n,v)))
       case SubPath(p,n) => copy(subEntitiesMap=updateSubEntity(p,_.setPropRec(n,v)))
       case Direct(p) => copy(propertiesMap=propertiesMap.updated(p, Seq(v)))
+      case DirectRef(p) => copy(referencesMap = referencesMap.updated(p, Seq(v)))
     }
     def unsetPropRec[V](p:PropertyPath[_,V]):EntityInstance=p match {
       case SubIndexedPath(p,i,n) => copy(subEntitiesMap=updateSubEntity(p,i,_.unsetPropRec(n)))
       case SubPath(p,n) => copy(subEntitiesMap=updateSubEntity(p,_.unsetPropRec(n)))
       case Direct(p) => copy(propertiesMap=propertiesMap - p)
+      case DirectRef(p) => copy(referencesMap=referencesMap - p)
     }
     def addPropRec[V](p:PropertyPath[_,V],v:V):EntityInstance=p match {
       case SubIndexedPath(p,i,n) => copy(subEntitiesMap=updateSubEntity(p,i,_.addPropRec(n,v)))
       case SubPath(p,n) => copy(subEntitiesMap=updateSubEntity(p,_.addPropRec(n,v)))
       case Direct(p) => copy(propertiesMap=propertiesMap.updated(p, propertiesMap.getOrElse(p, Seq.empty) :+ v))
+      case DirectRef(p) => copy(referencesMap=referencesMap.updated(p, referencesMap.getOrElse(p, Seq.empty) :+ v))
     }
     def removePropRec[V](p:PropertyPath[_,V],remIdx:Int):EntityInstance=p match {
       case SubIndexedPath(p,i,n) => copy(subEntitiesMap=updateSubEntity(p,i,_.removePropRec(n,remIdx)))
@@ -177,6 +174,13 @@ object GenericModel2 {
           //otherwise, update with new values
           case newVals => copy(propertiesMap=propertiesMap.updated(p, newVals))
         }
+      case DirectRef(p) => 
+        referencesMap.getOrElse(p, Seq.empty).zipWithIndex.collect{case (v,idx) if  idx != remIdx => v} match {
+          //no more values, unset property
+          case empty if empty.isEmpty => copy(referencesMap=referencesMap - p)
+          //otherwise, update with new values
+          case newVals => copy(referencesMap=referencesMap.updated(p, newVals))
+        }
     }
 
     
@@ -186,6 +190,12 @@ object GenericModel2 {
   case class EntityNotExists[E<:Entity](e:E,id:String) extends ModelCommandFailure
   case class EntityAlreadyExists[E<:Entity](e:E,id:String) extends ModelCommandFailure
   
+  /** GenericModel: updated with ModelCommand
+   *  -> NOT TO BE USED for a whole big model that could not fit in memory
+   *  - basic entity existence check
+   *  - no reference check (quite easy to add but is it useful as it will not be the effective model updater)
+   *  
+   */
   case class Model(
       entities : Map[Entity,Map[String,EntityInstance]] //,
 //      entities2 : Map[Entity,Map[Entity#Instance,Map[Entity#EntityReferenceProperty[_,_],Entity#EntityPropertyWithValue[_]]]]
@@ -206,10 +216,13 @@ object GenericModel2 {
       getProp(e,p,prop)
       .flatMap(refId => entities.get(r).flatMap(_.get(refId)))
         
-    def updateExistingEntityInstance[E<:Entity](entity:E,id:String,transform:EntityInstance => EntityInstance)= {
+    def updateExistingEntityInstance[E<:Entity](entity:E,id:String,transform:EntityInstance => Either[ModelCommandFailure,EntityInstance])= {
       entities.get(entity).flatMap(_.get(id))
-      .map(current => 
-        copy(entities=entities.updated(entity,entities(entity).updated(id, transform(current))))
+      .toRight(EntityNotExists(entity,id))
+      .right.flatMap(current => 
+        transform(current).right.map(newEntity =>
+          copy(entities=entities.updated(entity,entities(entity).updated(id, newEntity)))
+        )
       )
     }
     
@@ -217,19 +230,28 @@ object GenericModel2 {
       case cmd @ EntityExistsCommand(entity,id,prov) =>
         val currentInstanceMap=entities.getOrElse(entity, Map.empty)
         if (currentInstanceMap contains id) Left(EntityAlreadyExists(entity,id))
-        else Right(copy(entities=entities.updated(entity, currentInstanceMap + (id -> EntityInstance(id,Map.empty,Map.empty))))) 
+        else Right(copy(entities=entities.updated(entity, currentInstanceMap + (id -> EntityInstance(id,Map.empty,Map.empty,Map.empty))))) 
       case cmd @ EntityNotExistsCommand(entity,id,prov) =>
         val currentInstanceMap=entities.getOrElse(entity, Map.empty)
         if (currentInstanceMap contains id) Right(copy(entities=entities.updated(entity, currentInstanceMap - id))) 
         else Left(EntityNotExists(entity,id))
       case cmd @ SetEntityPropertyCommand(entity,id,prop,value,prov) =>
-        updateExistingEntityInstance(entity,id,_.setPropRec(prop,value)).toRight(EntityNotExists(entity,id))
+        /** Beginning of a reference check  => discarded for the moment */
+//        (prop.refEntity) match {
+//          case Some(refEntity) => 
+//            val ref =
+//              refEntity.encode(value).flatMap(ref =>
+//                entities.get(refEntity.entity)
+//                .flatMap(_.get(ref))
+//              )
+//        }
+        updateExistingEntityInstance(entity,id,v => Right(v.setPropRec(prop,value)))
       case cmd @ UnsetEntityPropertyCommand(entity,id,prop,prov) =>
-        updateExistingEntityInstance(entity,id,_.unsetPropRec(prop)).toRight(EntityNotExists(entity,id))
+        updateExistingEntityInstance(entity,id,v => Right(v.unsetPropRec(prop)))
       case cmd @ AddEntityPropertyCommand(entity,id,prop,value,prov) =>
-        updateExistingEntityInstance(entity,id,_.addPropRec(prop,value)).toRight(EntityNotExists(entity,id))
+        updateExistingEntityInstance(entity,id,v => Right(v.addPropRec(prop,value)))
       case cmd @ RemoveEntityPropertyCommand(entity,id,prop,remIdx,prov) =>
-        updateExistingEntityInstance(entity,id,_.removePropRec(prop,remIdx)).toRight(EntityNotExists(entity,id))
+        updateExistingEntityInstance(entity,id,v => Right(v.removePropRec(prop,remIdx)))
     }
     
 //    implicit class RichEntityModel[E<:Entity](entity:E) {
