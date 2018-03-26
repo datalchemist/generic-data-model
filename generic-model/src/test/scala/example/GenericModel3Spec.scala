@@ -3,8 +3,8 @@ package example
 import org.scalatest._
 import play.api.libs.json.{Format, Json,JsObject,Reads,Writes}
 
-class GenericModelSpec extends FlatSpec with Matchers {
-  import GenericModel2._
+class GenericModel3Spec extends FlatSpec with Matchers {
+  import GenericModel3._
   import shapeless._
   import syntax._
   
@@ -39,21 +39,11 @@ class GenericModelSpec extends FlatSpec with Matchers {
   /**
    *  and Generic Entities definition, i.e. a grouping of general properties 
    */
-  trait PolityEntity extends Entity {
-    val name=prop(Props.name)
-    val polityType=prop(Props.hccPolityType)
-    val other = prop(Props.otherPolity)
-    val appelation = subEntity(Props.appelation)
-  }
+  trait PolityEntity extends Entity
   object PolityEntity extends PolityEntity
-  trait AppelationEntity extends Entity {
-    lazy val text=prop(Props.text)
-    lazy val date=subEntity(Props.date)
-  }
+  trait AppelationEntity extends Entity
   object AppelationEntity extends AppelationEntity
-  trait DateEntity extends Entity {
-    lazy val year=prop(Props.year)
-  }
+  trait DateEntity extends Entity
   object DateEntity extends DateEntity
   
   /** Then, we derive Typed-model with binding to case classes*/
@@ -62,6 +52,7 @@ class GenericModelSpec extends FlatSpec with Matchers {
   case class Polity(name:String,hccType:HCCPolityType.Value,appelation:Seq[Appelation])
   
   object TypedDateEntity extends DateEntity with TypedEntity {
+    import Props._
     type TypedInstance = Date
     val instanceGen = Generic[Date]
     
@@ -70,6 +61,7 @@ class GenericModelSpec extends FlatSpec with Matchers {
     
   }
   object TypedAppelationEntity extends AppelationEntity with TypedEntity {
+    import Props._
     type TypedInstance = Appelation
     val instanceGen = Generic[Appelation]
     
@@ -78,10 +70,11 @@ class GenericModelSpec extends FlatSpec with Matchers {
     
   }
   object TypedPolityEntity extends PolityEntity with TypedEntity {
+    import Props._
     type TypedInstance = Polity
     val instanceGen = Generic[Polity]
     
-    val consProps = one(name) :: one(polityType) :: multiple[TypedAppelationEntity.type](appelation,TypedAppelationEntity) :: HNil
+    val consProps = one(name) :: one(hccPolityType) :: multiple[TypedAppelationEntity.type](appelation,TypedAppelationEntity) :: HNil
     val constructor = makeCons(consProps)
     
   }
@@ -89,19 +82,22 @@ class GenericModelSpec extends FlatSpec with Matchers {
     val model = new Model(Map.empty)
 
 //    import model._
+    
+    
     val p1 = ("toto")
     val p2 = ("tata")
-    PolityEntity(p1) set (PolityEntity.appelation --> AppelationEntity.text) := "ddd"
-    PolityEntity(p1) set (PolityEntity.appelation -- 0 --> AppelationEntity.text) := "ddd"
+    PolityEntity(p1) set (Props.appelation --> Props.text) := "ddd"
+    PolityEntity(p1) set (Props.appelation -- 0 --> Props.text) := "ddd"
+    import Props._
     val commands=List(
       PolityEntity(p1) create,
-      PolityEntity(p1) set PolityEntity.name := "Polity name",
+      PolityEntity(p1) set name := "Polity name",
       PolityEntity(p2) create,
-      PolityEntity(p1) set PolityEntity.polityType := HCCPolityType.Hierarchical,
-      PolityEntity(p2) set PolityEntity.other := "toto",
-      PolityEntity(p1) set (PolityEntity.appelation --> AppelationEntity.text) := "Nom1",
-      PolityEntity(p1) set (PolityEntity.appelation -- 1 --> AppelationEntity.text) := "Nom2",
-      PolityEntity(p1) set (PolityEntity.appelation -- 1 --> AppelationEntity.date -- 0 --> DateEntity.year) := 2018
+      PolityEntity(p1) set hccPolityType := HCCPolityType.Hierarchical,
+      PolityEntity(p2) set otherPolity := "toto",
+      PolityEntity(p1) set (appelation --> text) := "Nom1",
+      PolityEntity(p1) set (appelation -- 1 --> text) := "Nom2",
+      PolityEntity(p1) set (appelation -- 1 --> date -- 0 --> year) := 2018
     )
     val finalModel = commands.foldLeft(model)((m,c)=>m(c).right.get)
   "The GenericModel object" should "add and retrieve simple properties to a model" in {
@@ -113,14 +109,14 @@ class GenericModelSpec extends FlatSpec with Matchers {
 //    val model4 = (model3.right.get apply (Polity(p2) set Polity.other := "toto")).right.get
     
     import finalModel._
-    val names :Seq[String]= entity(PolityEntity,p1).getProp(PolityEntity.name)
-    entity(PolityEntity,p1).getProp(PolityEntity.name) should be (Seq("Polity name"))
-    entity(PolityEntity,p1).getProp(PolityEntity.polityType) should be (Seq(HCCPolityType.Hierarchical))
-    entity(PolityEntity,p2).getRef(PolityEntity,PolityEntity.other).map(_.id) should be (Seq(p1))
-    entity(PolityEntity,p2).getProp(PolityEntity.polityType) should be (Seq())
-    entity(PolityEntity,p1).getProp(PolityEntity.appelation --> AppelationEntity.text) should be (Seq("Nom1"))
-    entity(PolityEntity,p1).getProp(PolityEntity.appelation -- 0 --> AppelationEntity.text) should be (Seq("Nom1"))
-    entity(PolityEntity,p1).getProp(PolityEntity.appelation -- 1 --> AppelationEntity.text) should be (Seq("Nom2"))
+    val names :Seq[String]= entity(PolityEntity,p1).getProp(name)
+    entity(PolityEntity,p1).getProp(name) should be (Seq("Polity name"))
+    entity(PolityEntity,p1).getProp(hccPolityType) should be (Seq(HCCPolityType.Hierarchical))
+//    entity(PolityEntity,p2).getRef(PolityEntity,otherPolity).map(_.id) should be (Seq(p1))
+    entity(PolityEntity,p2).getProp(hccPolityType) should be (Seq())
+    entity(PolityEntity,p1).getProp(appelation --> text) should be (Seq("Nom1"))
+    entity(PolityEntity,p1).getProp(appelation -- 0 --> text) should be (Seq("Nom1"))
+    entity(PolityEntity,p1).getProp(appelation -- 1 --> text) should be (Seq("Nom2"))
     
   }
   "The GenericModel object" should "enable TypedModel" in {
@@ -130,6 +126,6 @@ class GenericModelSpec extends FlatSpec with Matchers {
     }
     val polities : Option[Map[String, Either[String, Polity]]]= typedModel.typedInstances(TypedPolityEntity)
     polities.flatMap(_.get(p1)) should be(Some(Right(Polity("Polity name",HCCPolityType.Hierarchical,Seq(Appelation("Nom1",None),Appelation("Nom2",Some(Date(2018))))))))
-    polities.flatMap(_.get(p2)) should be(Some(Left(UniquePropertyNotDefined(TypedPolityEntity.one(TypedPolityEntity.polityType)))))
+    polities.flatMap(_.get(p2)) should be(Some(Left(UniquePropertyNotDefined(TypedPolityEntity.one(hccPolityType)))))
   }
 }
