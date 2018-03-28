@@ -7,36 +7,14 @@ import julienrf.json.{derived => JsonDerivation}
 import scala.collection.immutable.Seq
       
 object DefaultGenericModel extends SimpleGenericModel {
-  type ModelAssertionProvenance=String
-  implicit val provFmt: Format[String] = JsPath.format[String]
+  case class Prov(content:String)
+  type ModelAssertionProvenance=Prov
+  implicit lazy val provFmt: Format[Prov] = Json.format[Prov]
 }
 trait SimpleGenericModel {
   
-  
-  
-  /**
-   * 
-   * Next steps:
-   *  - Add Properties registry
-   *  	- consider namespace (sub registry)
-   *    - use to json formating property
-   *  	
-   * 
-   * 
-   * 
-   * 
-   * 
-   * 
-   * 
-   * 
-   * 
-   * 
-   * 
-   * 
-   * 
-   * 
-   * 
-   */
+  class PropertyAlreadyDefinedException(prop: String) extends Exception(s"Property already defined: $prop")
+  class EntityClassAlreadyDefinedException(cls: String) extends Exception(s"EntityClass already defined: $cls")
   
   type ModelAssertionProvenance
   implicit val provFmt: Format[ModelAssertionProvenance]
@@ -59,9 +37,9 @@ trait SimpleGenericModel {
     val name:String
   }
   object EntityClass {
-    private val existingClasses = collection.mutable.Map.empty[String,EntityClass]
+    private lazy val existingClasses = collection.mutable.Map.empty[String,EntityClass]
     private def checkAndAddClass(n:String,v:EntityClass) = 
-      if (existingClasses contains n) throw new Exception(s"Class defined multiple times: $n" ) 
+      if (existingClasses contains n) throw new EntityClassAlreadyDefinedException(n)
       else {existingClasses(n)=v;v}
     
     def define(n:String):EntityClass = {
@@ -74,7 +52,7 @@ trait SimpleGenericModel {
     def forName(n:String) = existingClasses.get(n)
     
     /** Json format based on name-based EntityClasses registry */
-    implicit val fmt:Format[EntityClass]={
+    implicit lazy val fmt:Format[EntityClass]={
       import play.api.libs.json._ // JSON library
       val baseFmt = (__ \ "entityClassName").format[String]
       val read=
@@ -85,16 +63,10 @@ trait SimpleGenericModel {
     }
   }
   
-  case class PropertyValue(path:ValueProperty[_],value:Any) {
-  }
-  implicit def RichPropJson[V](prop:ValueProperty[V]) = new {
-    def dec(js:JsValue) =
-      prop.fmt.reads(js).map(v => PropertyValue(prop,v))
-  }
   object Property {
-    private val existingProperties = collection.mutable.Map.empty[String,Property]
+    private lazy val existingProperties = collection.mutable.Map.empty[String,Property]
     private[SimpleGenericModel] def checkAndAddProp[P<:Property](n:String,v:P) = 
-      if (existingProperties contains n) throw new Exception(s"Property defined multiple times: $n" )
+      if (existingProperties contains n) throw new PropertyAlreadyDefinedException(n)
       else {existingProperties(n)=v;v}
     
     def forName(n:String) = existingProperties.get(n)
@@ -102,14 +74,15 @@ trait SimpleGenericModel {
     def subEntityId(id:String,prop:Property,idx:Option[Int])=s"${id}_${prop.name}${idx.fold("")(i=>s"_$i")}"
     
     /** Json format based on name-based EntityClasses registry */
-    implicit val fmt:Format[Property]={ // JSON library
+    implicit lazy val fmt:Format[Property]={ // JSON library
       val baseFmt = (__ \ "propertyName").format[String]
       val read=
-        baseFmt.flatMap(prop => 
+        baseFmt.flatMap{prop => 
           forName(prop).fold(Reads.apply[Property](_ => JsError(s"Could not find Property $prop")))(Reads.pure)
-        )
-      Format(read,Writes[Property](c=>baseFmt.writes(c.name)))
+        }
+      Format(read,Writes[Property](c=>{baseFmt.writes(c.name)}))
     }
+//    implicit lazy val rd:Reads[Property]={println("Get reads");Reads[Property](v => JsError("ERR"))}
     
     
     def propValuesMapFmt[V](implicit fmt:Format[V]) = 
@@ -153,11 +126,11 @@ trait SimpleGenericModel {
     
     /** Props, refs, subentities constructors */
     def prop[A](n:String)(implicit f:Format[A])=
-      Property.checkAndAddProp(n,new ValueProperty[A]{implicit val fmt=f;val name=if (namespace.isEmpty) n else s"$namespace:$n"})
+      Property.checkAndAddProp(n,new ValueProperty[A]{implicit lazy val fmt=f;lazy val name=if (namespace.isEmpty) n else s"$namespace:$n"})
     def subEntity[S<:EntityClass](e:S,n:String)=
-      Property.checkAndAddProp(n,new SubEntityProperty[S]{val entity =e;val name=if (namespace.isEmpty) n else s"$namespace:$n"})
+      Property.checkAndAddProp(n,new SubEntityProperty[S]{val entity =e;lazy val name=if (namespace.isEmpty) n else s"$namespace:$n"})
     def ref[R <: EntityClass,A](r:R,n:String,enc:A => Option[String])(implicit f:Format[A])=
-      Property.checkAndAddProp(n,new ReferenceProperty[R,A]{implicit val fmt=f;val entity =r;val encode = enc;val name=if (namespace.isEmpty) n else s"$namespace:$n"})
+      Property.checkAndAddProp(n,new ReferenceProperty[R,A]{implicit lazy val fmt=f;lazy val entity =r;val encode = enc;lazy val name=if (namespace.isEmpty) n else s"$namespace:$n"})
       
       
   }
@@ -169,12 +142,13 @@ trait SimpleGenericModel {
    *    
    */
   sealed trait PropertyPath[V]{
+    def valueFormat:Format[V]
     def refEntity:Option[ReferenceProperty[_<:EntityClass,V]]
   }
-  case class Direct[V](p:ValueProperty[V]) extends PropertyPath[V]{def refEntity=None}
-  case class DirectRef[R<:EntityClass,V](p:ReferenceProperty[R,V]) extends PropertyPath[V]{def refEntity=Some(p)}
-  case class SubPath[S<:EntityClass,V](p:SubEntityProperty[S],n:PropertyPath[V]) extends PropertyPath[V]{def refEntity=n.refEntity}
-  case class SubIndexedPath[S<:EntityClass,V](p:SubEntityProperty[S],i:Int,n:PropertyPath[V]) extends PropertyPath[V]{def refEntity=n.refEntity}
+  case class Direct[V](p:ValueProperty[V]) extends PropertyPath[V]{def refEntity=None;def valueFormat=p.fmt}
+  case class DirectRef[R<:EntityClass,V](p:ReferenceProperty[R,V]) extends PropertyPath[V]{def refEntity=Some(p);def valueFormat=p.fmt}
+  case class SubPath[S<:EntityClass,V](p:SubEntityProperty[S],n:PropertyPath[V]) extends PropertyPath[V]{def refEntity=n.refEntity;def valueFormat=n.valueFormat}
+  case class SubIndexedPath[S<:EntityClass,V](p:SubEntityProperty[S],i:Int,n:PropertyPath[V]) extends PropertyPath[V]{def refEntity=n.refEntity;def valueFormat=n.valueFormat}
   object PropertyPath {
     implicit def direct[V](p:ValueProperty[V])=Direct(p)
     implicit def directRef[R<:EntityClass,V](p:ReferenceProperty[R,V])=DirectRef(p)
@@ -216,7 +190,23 @@ trait SimpleGenericModel {
       case SubPath(p,n) => UntypedSubPath(p,n)
       case SubIndexedPath(p,i,n) => UntypedSubIndexedPath(p,i,n)
     }
-    implicit def fmt : OFormat[UntypedPropertyPath] = JsonDerivation.oformat[UntypedPropertyPath]()
+    implicit lazy val fmt : OFormat[UntypedPropertyPath] = JsonDerivation.oformat[UntypedPropertyPath]()
+  }
+  
+  sealed trait PropertyPathAction[V]
+  case class SetPropertyPathValue[V](path:PropertyPath[V],value:V) extends PropertyPathAction[V]
+  case class UnsetPropertyPathValue[V](path:PropertyPath[V]) extends PropertyPathAction[V]
+  case class AddPropertyPathValue[V](path:PropertyPath[V],value:V) extends PropertyPathAction[V]
+  case class RemovePropertyPathValue[V](path:PropertyPath[V],idx:Int) extends PropertyPathAction[V]
+  implicit class RichPropPathJson[V](prop:PropertyPath[V]) {
+    def :=(v:V) =
+      SetPropertyPathValue(prop,v)
+    def unset() =
+      UnsetPropertyPathValue(prop)
+    def add(v:V) =
+      AddPropertyPathValue(prop,v)
+    def rem(i:Int) =
+      RemovePropertyPathValue(prop,i)
   }
   
   
@@ -230,20 +220,20 @@ trait SimpleGenericModel {
 //  case class AddEntityProperty(entity:EntityClass,entityInstance:String,property:UntypedPropertyPath,value:JsValue,prov:ModelAssertionProvenance) extends UntypedAssertion
 //  case class RemoveEntityProperty(entity:EntityClass,entityInstance:String,property:UntypedPropertyPath,removeIdx:Int,prov:ModelAssertionProvenance) extends UntypedAssertion 
 //  
-//  object EntityExists {implicit val fmt:Format[EntityExists]=Json.format[EntityExists]}
-//  object EntityNotExists {implicit val fmt:Format[EntityNotExists]=Json.format[EntityNotExists]}
+//  object EntityExists {implicit lazy val fmt:Format[EntityExists]=Json.format[EntityExists]}
+//  object EntityNotExists {implicit lazy val fmt:Format[EntityNotExists]=Json.format[EntityNotExists]}
 //  object DefineSingleEntityProperty {
-//    implicit def fmt[V]:Format[DefineSingleEntityProperty]={
+//    implicit lazy val fmt[V]:Format[DefineSingleEntityProperty]={
 //    Json.format[DefineSingleEntityProperty]
 //  }}
-//  object UndefineProperty {implicit val fmt:Format[UndefineProperty]=Json.format[UndefineProperty]}
+//  object UndefineProperty {implicit lazy val fmt:Format[UndefineProperty]=Json.format[UndefineProperty]}
     /**
    * Properties is a map from EntityProperty to Seq of value
    */
   object UntypedGenericEntityInstance {
-    implicit val propValuesMapFmt = Property.propValuesMapFmt[Seq[JsValue]] 
-    implicit val subEntitiesMapFmt = Property.propValuesMapFmt[Seq[UntypedGenericEntityInstance]]
-    implicit def fmt : OFormat[UntypedGenericEntityInstance] = JsonDerivation.oformat[UntypedGenericEntityInstance]()
+    implicit lazy val propValuesMapFmt = Property.propValuesMapFmt[Seq[JsValue]] 
+    implicit lazy val subEntitiesMapFmt = Property.propValuesMapFmt[Seq[UntypedGenericEntityInstance]]
+    implicit lazy val fmt : OFormat[UntypedGenericEntityInstance] = JsonDerivation.oformat[UntypedGenericEntityInstance]()
   }
   case class UntypedGenericEntityInstance(id:String,
       propertiesMap:Map[Property,Seq[JsValue]],
@@ -332,8 +322,90 @@ trait SimpleGenericModel {
     }
 //  }
   
-  object InstanceDefinitionAssertion {implicit def fmt:Format[InstanceDefinitionAssertion]=JsonDerivation.oformat[InstanceDefinitionAssertion]()}
-  object InstancePropertyAssertion {implicit def fmt:Format[InstancePropertyAssertion]=JsonDerivation.oformat[InstancePropertyAssertion]()}
+  object EntityDefined { implicit lazy val fmt:Format[EntityDefined]=Json.format[EntityDefined] }
+  object EntityUndefined { implicit lazy val fmt:Format[EntityUndefined]=Json.format[EntityUndefined] }
+  
+  object SingleEntityPropertyDefined { implicit lazy val fmt:Format[SingleEntityPropertyDefined]=Json.format[SingleEntityPropertyDefined] }
+  object PropertyUndefined { implicit lazy val fmt:Format[PropertyUndefined]=Json.format[PropertyUndefined] }
+  object EntityPropertyAdded { implicit lazy val fmt:Format[EntityPropertyAdded]=Json.format[EntityPropertyAdded] }
+  object EntityPropertyRemoved { implicit lazy val fmt:Format[EntityPropertyRemoved]=Json.format[EntityPropertyRemoved] }  
+  
+  object InstanceDefinitionAssertion {
+    val reads: Reads[InstanceDefinitionAssertion] = {
+      (__ \ "type").read[String].flatMap {
+        case "EntityDefined" => implicitly[Reads[EntityDefined]].map(identity)
+        case "EntityUndefined" => implicitly[Reads[EntityUndefined]].map(identity)
+        case other => Reads(_ => JsError(s"Unknown assertion type $other"))
+      }
+    }
+    val writes: Writes[InstanceDefinitionAssertion] = Writes { event =>
+      val (jsValue, eventType) = event match {
+        case m: EntityDefined => (Json.toJson(m)(EntityDefined.fmt), "EntityDefined")
+        case m: EntityUndefined => (Json.toJson(m)(EntityUndefined.fmt), "EntityUndefined")
+      }
+      jsValue.transform(__.json.update((__ \ 'type).json.put(JsString(eventType)))).get
+    }
+    implicit lazy val fmt=Format(reads,writes)
+  }
+  object InstancePropertyAssertion {//implicit lazy val fmt:Format[InstancePropertyAssertion]=JsonDerivation.oformat[InstancePropertyAssertion]()
+    val reads: Reads[InstancePropertyAssertion] = {
+      (__ \ "type").read[String].flatMap {
+        case "SingleEntityPropertyDefined" => implicitly[Reads[SingleEntityPropertyDefined]].map(identity)
+        case "PropertyUndefined" => implicitly[Reads[PropertyUndefined]].map(identity)
+        case "EntityPropertyAdded" => implicitly[Reads[EntityPropertyAdded]].map(identity)
+        case "EntityPropertyRemoved" => implicitly[Reads[EntityPropertyRemoved]].map(identity)
+        case other => Reads(_ => JsError(s"Unknown assertion type $other"))
+      }
+    }
+    val writes: Writes[InstancePropertyAssertion] = Writes { event =>
+      val (jsValue, eventType) = event match {
+        case m: SingleEntityPropertyDefined => (Json.toJson(m)(SingleEntityPropertyDefined.fmt), "SingleEntityPropertyDefined")
+        case m: PropertyUndefined => (Json.toJson(m)(PropertyUndefined.fmt), "PropertyUndefined")
+        case m: EntityPropertyAdded => (Json.toJson(m)(EntityPropertyAdded.fmt), "EntityPropertyAdded")
+        case m: EntityPropertyRemoved => (Json.toJson(m)(EntityPropertyRemoved.fmt), "EntityPropertyRemoved")
+      }
+      jsValue.transform(__.json.update((__ \ 'type).json.put(JsString(eventType)))).get
+    }
+    implicit lazy val fmt=Format(reads,writes)
+  }
+//  object ModelAssertion {implicit lazy val fmt:Format[ModelAssertion]=JsonDerivation.oformat[ModelAssertion]()}
+  object ModelAssertion {
+    val reads: Reads[ModelAssertion] = {
+      (__ \ "type").read[String].flatMap {
+        case "instanceDefinition" => implicitly[Reads[InstanceDefinitionAssertion]].map(identity)
+        case "propertyDefinition" => implicitly[Reads[InstancePropertyAssertion]].map(identity)
+        case other => Reads(_ => JsError(s"Unknown assertion type $other"))
+      }
+    }
+    val writes: Writes[ModelAssertion] = Writes { event =>
+      val (jsValue, eventType) = event match {
+        case m: InstanceDefinitionAssertion => (Json.toJson(m)(InstanceDefinitionAssertion.writes), "instanceDefinition")
+        case m: InstancePropertyAssertion => (Json.toJson(m)(InstancePropertyAssertion.writes), "propertyDefinition")
+      }
+      jsValue.transform(__.json.update((__ \ 'type).json.put(JsString(eventType)))).get
+    }
+    implicit lazy val fmt=Format(reads,writes)
+  }
+
+  /** Commands DSL */
+  implicit class RichEntity[E<:EntityClass](entity:E) {
+    def apply(entityInstance:String)=new RichEntityInstance(entityInstance)
+    class RichEntityInstance(instance:String) {
+      def create(prov:ModelAssertionProvenance)=EntityDefined(entity,instance,prov)
+      def remove(prov:ModelAssertionProvenance)=EntityUndefined(entity,instance,prov)
+      def update[V](p:PropertyPathAction[V])=new RichEntityInstancePropertyPath(p) //RichEntityInstanceProperty(p)
+      class RichEntityInstancePropertyPath[V](p:PropertyPathAction[V]) {
+        def apply(prov:ModelAssertionProvenance)=p match {
+          case SetPropertyPathValue(p,v) => SingleEntityPropertyDefined(entity,instance,p,p.valueFormat.writes(v),prov)
+          case UnsetPropertyPathValue(p) => PropertyUndefined(entity,instance,p,prov)
+          case AddPropertyPathValue(p,v) => EntityPropertyAdded(entity,instance,p,p.valueFormat.writes(v),prov)
+          case RemovePropertyPathValue(p,i) => EntityPropertyRemoved(entity,instance,p,i,prov)
+        }
+      }
+    }
+  }
+
+
 }
 
 trait TypedModel extends SimpleGenericModel {
@@ -465,6 +537,22 @@ trait TypedModel extends SimpleGenericModel {
        .foldRight(((_:UntypedGenericEntityInstance) => Right(HNil)) : ValidatedFromInstance[HNil])(CombineValidatedFromInstance))
        //map valid result to the generic constructor of target class
        .andThen(_.right.map(instanceGen.from))
+    def makeConsWithId[NOID <: HList, VVL <: HList,C <: HList](cons:C)(implicit 
+        tail:ops.hlist.IsHCons.Aux[instanceGen.Repr,String,NOID],
+        mapped:ops.hlist.Mapped.Aux[NOID,ValidatedFromInstance,VVL], 
+        mapper:ops.hlist.Mapper.Aux[GetValidatedFromInstance.type,C,VVL],
+        folder:ops.hlist.RightFolder.Aux[VVL,ValidatedFromInstance[HNil],CombineValidatedFromInstance.type,ValidatedFromInstance[NOID]]
+    ) : UntypedGenericEntityInstance => Validated[TypedInstance] = {
+      val extractValues=
+        //get HList of prop values getter functions (of type EntityInstance => Validated[V])
+        (cons.map(GetValidatedFromInstance)
+        //fold to get the ValidatedFromInstance out of the list :  L(ValidatedFromInstance[v]) => ValidatedFromInstance[L(v)]
+         .foldRight(((_:UntypedGenericEntityInstance) => Right(HNil)) : ValidatedFromInstance[HNil])(CombineValidatedFromInstance))
+         //map valid result to the generic constructor of target class
+       (i:UntypedGenericEntityInstance) => {
+         extractValues(i).right.map(vs => instanceGen.from(tail.cons(i.id , vs)))
+       }
+    }
        
        
     //ValidatedFromInstance[V] => ValidatedFromInstance[L] => ValidatedFromInstance[V :: L]
@@ -489,18 +577,15 @@ trait TypedModel extends SimpleGenericModel {
         filt:ops.hlist.Filter.Aux[C,ConstrainedEntityValueProperty,VPL],
         zip:ops.hlist.ZipWith.Aux[instanceGen.Repr,VPL,GetUntypedPropertyValue.type,VPV],
         trav:ops.hlist.ToTraversable.Aux[VPV,List,(Property,Seq[JsValue])],
-        filt2:ops.hlist.Filter.Aux[C,ConstrainedEntityValueProperty,SPL],
+        filt2:ops.hlist.Filter.Aux[C,ConstrainedEntitySubProperty,SPL],
         zipc:ops.hlist.ZipConst.Aux[String,instanceGen.Repr,SPI],
         zip2:ops.hlist.ZipWith.Aux[SPI,SPL,GetUntypedSubProperty.type,SPV],
         trav2:ops.hlist.ToTraversable.Aux[SPV,List,(Property,Seq[UntypedGenericEntityInstance])]
-        
-        
-        //, 
-        //trav2:ops.hlist.ToTraversable.Aux[C,List,ConstrainedEntityProperty]
     ) : (String,TypedInstance) => UntypedGenericEntityInstance = (id:String, i:TypedInstance) => {
       val genInst=instanceGen.to(i)
       val (refs,vals) = trav.apply(zip.apply(genInst,filt.apply(cons))).partition(_._1.isInstanceOf[ReferenceProperty[_,_]])
       UntypedGenericEntityInstance(id,vals.toMap,refs.toMap,trav2.apply(zip2.apply(zipc(id,genInst),filt2.apply(cons))).toMap)
+      throw new Exception("Need to perform differently")
 //      vals.toMap
 //      instanceGen.to(i).toList.zip(cons.toList).map{
 //        case (v:Option[_],p:OptionalValue[_]) => v.toList : Seq[Any] 

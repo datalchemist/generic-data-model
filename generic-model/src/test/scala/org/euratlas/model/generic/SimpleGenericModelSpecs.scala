@@ -2,12 +2,13 @@ package org.euratlas.model.generic
 
 import org.scalatest._
 
-import play.api.libs.json.{JsValue,JsPath,Format, Json,JsObject,Reads,Writes}
+import play.api.libs.json.{JsString,JsValue,JsPath,Format, Json,JsObject,Reads,Writes}
 
-object SimpleGenericModelSpecs extends FlatSpec with Matchers {
+class SimpleGenericModelSpecs extends FlatSpec with Matchers {
   class SimpleGenericModelTest extends SimpleGenericModel {
-    type ModelAssertionProvenance=String
-    implicit val provFmt: Format[String] = JsPath.format[String]
+    case class Prov(content:String)
+    type ModelAssertionProvenance=Prov
+    implicit lazy val provFmt: Format[Prov] = Json.format[Prov]
     
     trait PolityClass extends EntityClass{val name= "Polity"}
     object PolityClass extends PolityClass
@@ -15,6 +16,10 @@ object SimpleGenericModelSpecs extends FlatSpec with Matchers {
     object AppelationClass extends AppelationClass
     trait DateClass extends EntityClass{val name= "Date"}
     object DateClass extends DateClass
+    
+    EntityClass.define(PolityClass)
+    EntityClass.define(AppelationClass)
+    EntityClass.define(DateClass)
     
     /** First define general props (basically, a mapping between names and type) */
     object BaseProps extends GeneralProperties {
@@ -71,10 +76,42 @@ object SimpleGenericModelSpecs extends FlatSpec with Matchers {
     }
   }
   
-  "SimpleGenericModel object" should "enable ModelDefinition with unique classes & properties" in (pending)
+  "SimpleGenericModel object" should "enable ModelDefinition with unique classes & properties" in {
+    intercept[DefaultGenericModel.PropertyAlreadyDefinedException] { 
+      new DefaultGenericModel.GeneralProperties {
+        val namespace=""
+        val name = prop[String]("name")
+      }
+      new DefaultGenericModel.GeneralProperties {
+        val namespace=""
+        val name = prop[Int]("name")
+      }
+    }
+  }
   it should "create generic instance from generic property events" in (pending)
   it should "enable TypedModel definition with bindings to generic classes & properties" in pending
   it should "convert generic instance to typed instance and back" in (pending)
+  it should "format generic entityClasses, properties & untyped property paths to/from Json" in {
+    val model = new SimpleGenericModelTest
+    import model._
+    Json.toJson(BaseProps.name) should equal(JsObject(Seq("propertyName" -> JsString(BaseProps.name.name))))
+    Json.fromJson[Property](Json.toJson(BaseProps.name)).get should equal(BaseProps.name)
+    Json.fromJson[Property](Json.toJson(BaseProps.sourcePolity)).get should equal(BaseProps.sourcePolity)
+    Json.fromJson[Property](Json.toJson(BaseProps.date)).get should equal(BaseProps.date)
+    Json.toJson(PolityClass) should equal(JsObject(Seq("entityClassName" -> JsString(PolityClass.name))))
+    Json.fromJson[EntityClass](Json.toJson(PolityClass)).get should equal(PolityClass)
+    Json.fromJson[EntityClass](Json.toJson(AppelationClass)).get should equal(AppelationClass)
+    val path=UntypedDirect(BaseProps.name)
+    Json.fromJson[UntypedPropertyPath](Json.toJson(path)).get should equal(path)
+  }
+  it should "format generic instance to/from Json" in (pending)
+  it should "format generic assertions to/from Json" in {
+    val model = new SimpleGenericModelTest
+    import model._
+    val n=Json.toJson("name")
+    val a = SingleEntityPropertyDefined(PolityClass,"entityId",UntypedDirect(BaseProps.name),n,Prov(""))
+    Json.fromJson[SingleEntityPropertyDefined](Json.toJson(a)).get should equal(a)
+  }
   
   
 }
