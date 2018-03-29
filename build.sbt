@@ -20,12 +20,16 @@ val playJsonDerivedCodecsJvm = "org.julienrf" %% "play-json-derived-codecs" % "4
 
 val playGeojson = "au.id.jazzy" %% "play-geojson" % "1.5.0"
 
+val scalaTest = "org.scalatest" %% "scalatest" % "3.0.1" % Test
+val scalaCheck = "org.scalacheck" %% "scalacheck" % "1.13.4" % Test
+
 
 lazy val `generic-model` = (project in file("generic-model")).
   settings(
     EclipseKeys.eclipseOutput := Some("eclipse_target"),
     name := "generic-data-model",
-    libraryDependencies += scalaTest % Test,
+    libraryDependencies += scalaTest,
+    libraryDependencies += scalaCheck,
     libraryDependencies += "com.chuusai" %% "shapeless" % "2.3.3",
     libraryDependencies += playJsonJvm,
     libraryDependencies += playJsonDerivedCodecsJvm

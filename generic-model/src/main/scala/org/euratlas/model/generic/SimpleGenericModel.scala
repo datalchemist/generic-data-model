@@ -6,11 +6,11 @@ import julienrf.json.{derived => JsonDerivation}
 
 import scala.collection.immutable.Seq
       
-object DefaultGenericModel extends SimpleGenericModel {
-  case class Prov(content:String)
-  type ModelAssertionProvenance=Prov
-  implicit lazy val provFmt: Format[Prov] = Json.format[Prov]
-}
+//object DefaultGenericModel extends SimpleGenericModel {
+//  case class Prov(content:String)
+//  type ModelAssertionProvenance=Prov
+//  implicit lazy val provFmt: Format[Prov] = Json.format[Prov]
+//}
 trait SimpleGenericModel {
   
   class PropertyAlreadyDefinedException(prop: String) extends Exception(s"Property already defined: $prop")
@@ -85,10 +85,11 @@ trait SimpleGenericModel {
 //    implicit lazy val rd:Reads[Property]={println("Get reads");Reads[Property](v => JsError("ERR"))}
     
     
-    def propValuesMapFmt[V](implicit fmt:Format[V]) = 
+    implicit def propValuesMapFmt[V](implicit fmt:Format[V]):Format[Map[Property,V]] = 
       Format(
         Reads[Map[Property,V]]((v:JsValue) =>
-           Reads.map[V].reads(v).flatMap{res =>
+          __.lazyRead(Reads.map[V])
+           .reads(v).flatMap{res =>
              res.map{case (p,v) => (p -> Property.forName(p)) -> v} match {
                case containsErrors if containsErrors.exists(!_._1._2.isDefined) =>
                  JsError(s"Could not find Property ${containsErrors.collect{case ((n,None),_) => n}.mkString(", ")}")
@@ -231,9 +232,19 @@ trait SimpleGenericModel {
    * Properties is a map from EntityProperty to Seq of value
    */
   object UntypedGenericEntityInstance {
-    implicit lazy val propValuesMapFmt = Property.propValuesMapFmt[Seq[JsValue]] 
-    implicit lazy val subEntitiesMapFmt = Property.propValuesMapFmt[Seq[UntypedGenericEntityInstance]]
-    implicit lazy val fmt : OFormat[UntypedGenericEntityInstance] = JsonDerivation.oformat[UntypedGenericEntityInstance]()
+//    implicit lazy val propValuesMapFmt = Property.propValuesMapFmt[Seq[JsValue]] 
+//    implicit lazy val subEntitiesMapFmt = Property.propValuesMapFmt[Seq[UntypedGenericEntityInstance]]
+    import play.api.libs.json._ // JSON library
+    import play.api.libs.json.Reads._ // Custom validation helpers
+    import play.api.libs.functional.syntax._ // Combinator syntax
+    
+    implicit val instanceFormat: Format[UntypedGenericEntityInstance] = (
+      (JsPath \ "id").format[String] and
+      (JsPath \ "valueProps").format(Property.propValuesMapFmt[Seq[JsValue]]) and
+      (JsPath \ "refProps").format(Property.propValuesMapFmt[Seq[JsValue]]) and
+      (JsPath \ "subProps").lazyFormat(Property.propValuesMapFmt[Seq[UntypedGenericEntityInstance]])
+    )(UntypedGenericEntityInstance.apply, unlift(UntypedGenericEntityInstance.unapply))
+//    implicit lazy val fmt : OFormat[UntypedGenericEntityInstance] = Json.format[UntypedGenericEntityInstance]
   }
   case class UntypedGenericEntityInstance(id:String,
       propertiesMap:Map[Property,Seq[JsValue]],
@@ -322,20 +333,20 @@ trait SimpleGenericModel {
     }
 //  }
   
-  object EntityDefined { implicit lazy val fmt:Format[EntityDefined]=Json.format[EntityDefined] }
-  object EntityUndefined { implicit lazy val fmt:Format[EntityUndefined]=Json.format[EntityUndefined] }
+  object EntityDefined { lazy val fmt:Format[EntityDefined]=Json.format[EntityDefined] }
+  object EntityUndefined { lazy val fmt:Format[EntityUndefined]=Json.format[EntityUndefined] }
   
-  object SingleEntityPropertyDefined { implicit lazy val fmt:Format[SingleEntityPropertyDefined]=Json.format[SingleEntityPropertyDefined] }
-  object PropertyUndefined { implicit lazy val fmt:Format[PropertyUndefined]=Json.format[PropertyUndefined] }
-  object EntityPropertyAdded { implicit lazy val fmt:Format[EntityPropertyAdded]=Json.format[EntityPropertyAdded] }
-  object EntityPropertyRemoved { implicit lazy val fmt:Format[EntityPropertyRemoved]=Json.format[EntityPropertyRemoved] }  
+  object SingleEntityPropertyDefined { lazy val fmt:Format[SingleEntityPropertyDefined]=Json.format[SingleEntityPropertyDefined] }
+  object PropertyUndefined { lazy val fmt:Format[PropertyUndefined]=Json.format[PropertyUndefined] }
+  object EntityPropertyAdded { lazy val fmt:Format[EntityPropertyAdded]=Json.format[EntityPropertyAdded] }
+  object EntityPropertyRemoved { lazy val fmt:Format[EntityPropertyRemoved]=Json.format[EntityPropertyRemoved] }  
   
   object InstanceDefinitionAssertion {
     val reads: Reads[InstanceDefinitionAssertion] = {
       (__ \ "type").read[String].flatMap {
-        case "EntityDefined" => implicitly[Reads[EntityDefined]].map(identity)
-        case "EntityUndefined" => implicitly[Reads[EntityUndefined]].map(identity)
-        case other => Reads(_ => JsError(s"Unknown assertion type $other"))
+        case "EntityDefined" => EntityDefined.fmt.map(identity)
+        case "EntityUndefined" => EntityUndefined.fmt.map(identity)
+        case other => Reads(v => JsError(s"Unknown InstanceDefinitionAssertion type $other"))
       }
     }
     val writes: Writes[InstanceDefinitionAssertion] = Writes { event =>
@@ -345,16 +356,16 @@ trait SimpleGenericModel {
       }
       jsValue.transform(__.json.update((__ \ 'type).json.put(JsString(eventType)))).get
     }
-    implicit lazy val fmt=Format(reads,writes)
+    lazy val fmt=Format(reads,writes)
   }
   object InstancePropertyAssertion {//implicit lazy val fmt:Format[InstancePropertyAssertion]=JsonDerivation.oformat[InstancePropertyAssertion]()
     val reads: Reads[InstancePropertyAssertion] = {
       (__ \ "type").read[String].flatMap {
-        case "SingleEntityPropertyDefined" => implicitly[Reads[SingleEntityPropertyDefined]].map(identity)
-        case "PropertyUndefined" => implicitly[Reads[PropertyUndefined]].map(identity)
-        case "EntityPropertyAdded" => implicitly[Reads[EntityPropertyAdded]].map(identity)
-        case "EntityPropertyRemoved" => implicitly[Reads[EntityPropertyRemoved]].map(identity)
-        case other => Reads(_ => JsError(s"Unknown assertion type $other"))
+        case "SingleEntityPropertyDefined" => SingleEntityPropertyDefined.fmt.map(identity)
+        case "PropertyUndefined" => PropertyUndefined.fmt.map(identity)
+        case "EntityPropertyAdded" => EntityPropertyAdded.fmt.map(identity)
+        case "EntityPropertyRemoved" => EntityPropertyRemoved.fmt.map(identity)
+        case other => Reads(v => JsError(s"Unknown InstancePropertyAssertion type $other"))
       }
     }
     val writes: Writes[InstancePropertyAssertion] = Writes { event =>
@@ -366,25 +377,44 @@ trait SimpleGenericModel {
       }
       jsValue.transform(__.json.update((__ \ 'type).json.put(JsString(eventType)))).get
     }
-    implicit lazy val fmt=Format(reads,writes)
+    lazy val fmt=Format(reads,writes)
   }
 //  object ModelAssertion {implicit lazy val fmt:Format[ModelAssertion]=JsonDerivation.oformat[ModelAssertion]()}
   object ModelAssertion {
     val reads: Reads[ModelAssertion] = {
-      (__ \ "type").read[String].flatMap {
-        case "instanceDefinition" => implicitly[Reads[InstanceDefinitionAssertion]].map(identity)
-        case "propertyDefinition" => implicitly[Reads[InstancePropertyAssertion]].map(identity)
-        case other => Reads(_ => JsError(s"Unknown assertion type $other"))
-      }
+      InstancePropertyAssertion.fmt.map(identity[ModelAssertion])
+      .orElse(InstanceDefinitionAssertion.fmt.map(identity[ModelAssertion]))
+//      (__ \ "type").read[String].flatMap {
+//        case "EntityDefined" => EntityDefined.fmt.map(identity)
+//        case "EntityUndefined" => EntityUndefined.fmt.map(identity)
+//        case "SingleEntityPropertyDefined" => SingleEntityPropertyDefined.fmt.map(identity)
+//        case "PropertyUndefined" => PropertyUndefined.fmt.map(identity)
+//        case "EntityPropertyAdded" => EntityPropertyAdded.fmt.map(identity)
+//        case "EntityPropertyRemoved" => EntityPropertyRemoved.fmt.map(identity)
+//        case other => Reads(_ => JsError(s"Unknown assertion type $other"))
+////        case "instanceDefinition" => InstanceDefinitionAssertion.fmt.map(identity)
+////        case "propertyDefinition" => InstancePropertyAssertion.fmt.map(identity)
+////        case other => Reads(_ => JsError(s"Unknown assertion type $other"))
+//      }
     }
     val writes: Writes[ModelAssertion] = Writes { event =>
-      val (jsValue, eventType) = event match {
-        case m: InstanceDefinitionAssertion => (Json.toJson(m)(InstanceDefinitionAssertion.writes), "instanceDefinition")
-        case m: InstancePropertyAssertion => (Json.toJson(m)(InstancePropertyAssertion.writes), "propertyDefinition")
+      event match {
+        case m: InstanceDefinitionAssertion => (Json.toJson(m)(InstanceDefinitionAssertion.writes))
+        case m: InstancePropertyAssertion => (Json.toJson(m)(InstancePropertyAssertion.writes))
       }
-      jsValue.transform(__.json.update((__ \ 'type).json.put(JsString(eventType)))).get
+//      val (jsValue, eventType) = event match {
+//        case m: EntityDefined => (Json.toJson(m)(EntityDefined.fmt), "EntityDefined")
+//        case m: EntityUndefined => (Json.toJson(m)(EntityUndefined.fmt), "EntityUndefined")
+//        case m: SingleEntityPropertyDefined => (Json.toJson(m)(SingleEntityPropertyDefined.fmt), "SingleEntityPropertyDefined")
+//        case m: PropertyUndefined => (Json.toJson(m)(PropertyUndefined.fmt), "PropertyUndefined")
+//        case m: EntityPropertyAdded => (Json.toJson(m)(EntityPropertyAdded.fmt), "EntityPropertyAdded")
+//        case m: EntityPropertyRemoved => (Json.toJson(m)(EntityPropertyRemoved.fmt), "EntityPropertyRemoved")
+////        case m: InstanceDefinitionAssertion => (Json.toJson(m)(InstanceDefinitionAssertion.writes), "instanceDefinition")
+////        case m: InstancePropertyAssertion => (Json.toJson(m)(InstancePropertyAssertion.writes), "propertyDefinition")
+//      }
+//      jsValue.transform(__.json.update((__ \ 'type).json.put(JsString(eventType)))).get
     }
-    implicit lazy val fmt=Format(reads,writes)
+    lazy val fmt=Format(reads,writes)
   }
 
   /** Commands DSL */
