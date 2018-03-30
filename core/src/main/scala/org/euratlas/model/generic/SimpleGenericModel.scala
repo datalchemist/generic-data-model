@@ -309,13 +309,15 @@ trait SimpleGenericModel {
   }
   
   
-  sealed trait ModelAssertion
+  sealed trait ModelAssertion {
+    def entity:EntityClass
+    def entityInstance:String
+    def prov:ModelAssertionProvenance
+  }
   sealed trait InstanceDefinitionAssertion extends ModelAssertion
   case class EntityDefined(entity:EntityClass,entityInstance:String,prov:ModelAssertionProvenance) extends InstanceDefinitionAssertion
   case class EntityUndefined(entity:EntityClass,entityInstance:String,prov:ModelAssertionProvenance) extends InstanceDefinitionAssertion
   sealed trait InstancePropertyAssertion extends ModelAssertion {
-    def entity:EntityClass
-    def entityInstance:String
     def property:UntypedPropertyPath
   }
   case class SingleEntityPropertyDefined(entity:EntityClass,entityInstance:String,property:UntypedPropertyPath,value:JsValue,prov:ModelAssertionProvenance) extends InstancePropertyAssertion

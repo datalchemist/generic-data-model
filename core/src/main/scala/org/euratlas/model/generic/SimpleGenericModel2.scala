@@ -207,7 +207,7 @@ trait SimpleGenericModel2 {
   object UntypedPropertyPath {
     implicit def fromPropertyPath(p:PropertyPath[_]):UntypedPropertyPath = p match {
       case Direct(p) => UntypedDirect(p)
-//      case DirectRef(p) => UntypedDirectRef(p)
+      case DirectRef(p) => UntypedDirectRef(p)
       case SubPath(p,n) => UntypedSubPath(p,n)
       case SubIndexedPath(p,i,n) => UntypedSubIndexedPath(p,i,n)
     }
