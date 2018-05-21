@@ -40,7 +40,7 @@ import scala.collection.immutable.Seq
   trait EntityClass {
     val name:String
   }
-  object EntityClass {
+  trait EntityModel {
     private lazy val existingClasses = collection.mutable.Map.empty[String,EntityClass]
     private def checkAndAddClass(n:String,v:EntityClass) = 
       if (existingClasses contains n) throw new EntityClassAlreadyDefinedException(n)
@@ -53,17 +53,7 @@ import scala.collection.immutable.Seq
     def define(cls:EntityClass) : EntityClass= {
       checkAndAddClass(cls.name,cls)
     }
-    def forName(n:String) = existingClasses.get(n)
-    /** Json format based on name-based EntityClasses registry */
-    implicit lazy val fmt:Format[EntityClass]={
-      import play.api.libs.json._ // JSON library
-      val baseFmt = (__ \ "entityClassName").format[String]
-      val read=
-        baseFmt.flatMap(cls => 
-          forName(cls).fold(Reads.apply[EntityClass](_ => JsError(s"Could not find Entity class $cls")))(Reads.pure)
-        )
-      Format(read,Writes[EntityClass](c=>baseFmt.writes(c.name)))
-    }
+    def getEntityClass(n:String) = existingClasses.get(n)
   }
   
   /** Property base classes 
@@ -82,53 +72,34 @@ import scala.collection.immutable.Seq
   sealed trait SubEntityProperty[E<:EntityClass]  extends Property { //extends Property[]
     val entity : E
   }
+  
   object Property {
+    def subEntityId(id:String,prop:Property,idx:Option[Int])=s"${id}_${prop.name}${idx.fold("")(i=>s"_$i")}"
+    
+  }
+  
+  /** Base trait to define general properties */
+  trait PropertyModel {
     private lazy val existingProperties = collection.mutable.Map.empty[String,Property]
     private[generic] def checkAndAddProp[P<:Property](n:String,v:P) = 
       if (existingProperties contains n) throw new PropertyAlreadyDefinedException(n)
       else {existingProperties(n)=v;v}
     
-    def forName(n:String) = existingProperties.get(n)
+    def getProperty(n:String) = existingProperties.get(n)
     
-    def subEntityId(id:String,prop:Property,idx:Option[Int])=s"${id}_${prop.name}${idx.fold("")(i=>s"_$i")}"
     
-    /** Json format based on name-based EntityClasses registry */
-    implicit lazy val fmt:Format[Property]={ // JSON library
-      val baseFmt = (__ \ "propertyName").format[String]
-      val read=
-        baseFmt.flatMap{prop => 
-          forName(prop).fold(Reads.apply[Property](_ => JsError(s"Could not find Property $prop")))(Reads.pure)
-        }
-      Format(read,Writes[Property](c=>{baseFmt.writes(c.name)}))
-    }
-    
-    implicit def propValuesMapFmt[V](implicit fmt:Format[V]):Format[Map[Property,V]] = 
-      Format(
-        Reads[Map[Property,V]]((v:JsValue) =>
-          __.lazyRead(Reads.map[V])
-           .reads(v).flatMap{res =>
-             res.map{case (p,v) => (p -> Property.forName(p)) -> v} match {
-               case containsErrors if containsErrors.exists(!_._1._2.isDefined) =>
-                 JsError(s"Could not find Property ${containsErrors.collect{case ((n,None),_) => n}.mkString(", ")}")
-               case good => JsSuccess(good.map{case ((_,Some(p)),v) => (p:Property) -> v})
-             }
-           }
-        ),
-        Writes((v:Map[Property,V]) => Json.toJson(v.map{case (p,v) => p.name -> v}))
-    )  
-  }
   
-  /** Base trait to define general properties */
-  trait GeneralProperties {
+//  }
+  
     val namespace:String
     
     /** Props, refs, subentities constructors */
     def prop[A](n:String)(implicit f:Format[A])=
-      Property.checkAndAddProp(n,new ValueProperty[A]{implicit lazy val fmt=f;lazy val name=if (namespace.isEmpty) n else s"$namespace:$n"})
+      checkAndAddProp(n,new ValueProperty[A]{implicit lazy val fmt=f;lazy val name=if (namespace.isEmpty) n else s"$namespace:$n"})
     def subEntity[S<:EntityClass](e:S,n:String)=
-      Property.checkAndAddProp(n,new SubEntityProperty[S]{val entity =e;lazy val name=if (namespace.isEmpty) n else s"$namespace:$n"})
+      checkAndAddProp(n,new SubEntityProperty[S]{val entity =e;lazy val name=if (namespace.isEmpty) n else s"$namespace:$n"})
     def ref[R <: EntityClass,A](r:R,n:String,enc:A => Option[String])(implicit f:Format[A])=
-      Property.checkAndAddProp(n,new ReferenceProperty[R,A]{implicit lazy val fmt=f;lazy val entity =r;val encode = enc;lazy val name=if (namespace.isEmpty) n else s"$namespace:$n"})
+      checkAndAddProp(n,new ReferenceProperty[R,A]{implicit lazy val fmt=f;lazy val entity =r;val encode = enc;lazy val name=if (namespace.isEmpty) n else s"$namespace:$n"})
   }
 
   sealed trait AssertionOperation
@@ -367,7 +338,42 @@ import scala.collection.immutable.Seq
       }
     }
     
-    object json {
+    trait json { self:PropertyModel with EntityModel =>
+      /** Json format based on name-based EntityClasses registry */
+      implicit lazy val eFmt:Format[EntityClass]={
+        import play.api.libs.json._ // JSON library
+        val baseFmt = (__ \ "entityClassName").format[String]
+        val read=
+          baseFmt.flatMap(cls => 
+            getEntityClass(cls).fold(Reads.apply[EntityClass](_ => JsError(s"Could not find Entity class $cls")))(Reads.pure)
+          )
+        Format(read,Writes[EntityClass](c=>baseFmt.writes(c.name)))
+      }
+      /** Json format based on name-based EntityClasses registry */
+      implicit lazy val pFmt:Format[Property]={ // JSON library
+        val baseFmt = (__ \ "propertyName").format[String]
+        val read=
+          baseFmt.flatMap{prop => 
+            getProperty(prop).fold(Reads.apply[Property](_ => JsError(s"Could not find Property $prop")))(Reads.pure)
+          }
+        Format(read,Writes[Property](c=>{baseFmt.writes(c.name)}))
+      }
+      
+      implicit def propValuesMapFmt[V](implicit fmt:Format[V]):Format[Map[Property,V]] = 
+        Format(
+          Reads[Map[Property,V]]((v:JsValue) =>
+            __.lazyRead(Reads.map[V])
+             .reads(v).flatMap{res =>
+               res.map{case (p,v) => (p -> getProperty(p)) -> v} match {
+                 case containsErrors if containsErrors.exists(!_._1._2.isDefined) =>
+                   JsError(s"Could not find Property ${containsErrors.collect{case ((n,None),_) => n}.mkString(", ")}")
+                 case good => JsSuccess(good.map{case ((_,Some(p)),v) => (p:Property) -> v})
+               }
+             }
+          ),
+          Writes((v:Map[Property,V]) => Json.toJson(v.map{case (p,v) => p.name -> v}))
+      )      
+      
       implicit lazy val ppFmt : OFormat[PropertyPath] = JsonDerivation.oformat[PropertyPath]()
       implicit lazy val poFmt : OFormat[PropertyOperation] = JsonDerivation.oformat[PropertyOperation]()
       implicit lazy val ppaFmt : Format[PropertyPathAssertion] = Json.format[PropertyPathAssertion]
@@ -376,9 +382,9 @@ import scala.collection.immutable.Seq
       
       implicit val instanceFormat: Format[GenericEntityInstance] = (
         (JsPath \ "id").format[String] and
-        (JsPath \ "valueProps").format(Property.propValuesMapFmt[Seq[JsValue]]) and
-        (JsPath \ "refProps").format(Property.propValuesMapFmt[Seq[JsValue]]) and
-        (JsPath \ "subProps").lazyFormat(Property.propValuesMapFmt[Seq[GenericEntityInstance]])
+        (JsPath \ "valueProps").format(propValuesMapFmt[Seq[JsValue]]) and
+        (JsPath \ "refProps").format(propValuesMapFmt[Seq[JsValue]]) and
+        (JsPath \ "subProps").lazyFormat(propValuesMapFmt[Seq[GenericEntityInstance]])
       )(GenericEntityInstance.apply, unlift(GenericEntityInstance.unapply))
     }
   }  

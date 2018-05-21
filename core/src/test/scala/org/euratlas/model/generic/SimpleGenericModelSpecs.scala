@@ -12,7 +12,7 @@ import scala.collection.immutable.Seq
 class SimpleGenericModelSpecs extends FlatSpec with Matchers with Checkers {
   import Untyped._
   
-  class SimpleGenericModelTest { //extends SimpleGenericModel {
+//  class SimpleGenericModelTest { //extends SimpleGenericModel {
     case class Prov(content:String)
     type ModelAssertionProvenance=Prov
     implicit lazy val provFmt: Format[Prov] = Json.format[Prov]
@@ -24,13 +24,14 @@ class SimpleGenericModelSpecs extends FlatSpec with Matchers with Checkers {
     trait DateClass extends EntityClass{val name= "Date"}
     object DateClass extends DateClass
     
-    EntityClass.define(PolityClass)
-    EntityClass.define(AppelationClass)
-    EntityClass.define(DateClass)
     
     /** First define general props (basically, a mapping between names and type) */
-    object BaseProps extends GeneralProperties {
+    class BasePropsModel extends PropertyModel with EntityModel {
       val namespace=""
+      
+      define(PolityClass)
+      define(AppelationClass)
+      define(DateClass)
       
       val name = prop[String]("name")
       
@@ -47,11 +48,11 @@ class SimpleGenericModelSpecs extends FlatSpec with Matchers with Checkers {
       
       lazy val date = subEntity[DateClass](DateClass,"date")
       lazy val appelation = subEntity[AppelationClass](AppelationClass,"apellation")
-    }
-    val valueProps=List(BaseProps.name,BaseProps.effectiveness,BaseProps.regularity,BaseProps.uncertainty,BaseProps.text,BaseProps.year)
-    val refProps=List(BaseProps.sourcePolity,BaseProps.targetPolity)
-    val subProps=List(BaseProps.appelation,BaseProps.appelation)
-    val allProps = valueProps ++ refProps ++ subProps
+      
+      val valueProps=List(name,effectiveness,regularity,uncertainty,text,year)
+      val refProps=List(sourcePolity,targetPolity)
+      val subProps=List(appelation,appelation)
+      val allProps = valueProps ++ refProps ++ subProps
     
     /** Generator for property-based testing */
     implicit val propGen = Arbitrary(Gen.oneOf(allProps))
@@ -118,7 +119,8 @@ class SimpleGenericModelSpecs extends FlatSpec with Matchers with Checkers {
         } yield a
 //      )
     implicit val modelAssertionArbitrary = Arbitrary(assertionGen)
-  }
+//  }
+    }
   
   case class Date(year:Int)
   case class Appelation(text:String,date:Option[Date])
@@ -128,46 +130,45 @@ class SimpleGenericModelSpecs extends FlatSpec with Matchers with Checkers {
 case class Position(x:Int,y:Int)
 object Position {implicit val format=Json.format[Position]}
   
-  class SimpleTypedModelTest extends SimpleGenericModelTest { //with TypedModel {
+  class SimpleTypedModelTest extends BasePropsModel { //with TypedModel {
     import shapeless._
     import typed._
 //    import TypedEntity._
+    
+    val nameProp=name
     object TypedDateClass extends DateClass with TypedEntity {
       type TypedInstance = Date
       val instanceGen = Generic[Date]
-      val consProps = one(BaseProps.year) :: HNil
+      val consProps = one(year) :: HNil
       val constructor = makeCons(consProps)
       val toGenericInstance = makeUnCons(consProps)
     }
     object TypedAppelationClass extends AppelationClass with TypedEntity {
       type TypedInstance = Appelation
       val instanceGen = Generic[Appelation]
-      val consProps = one(BaseProps.text) :: optional[TypedDateClass.type](BaseProps.date,TypedDateClass) :: HNil
+      val consProps = one(text) :: optional[TypedDateClass.type](date,TypedDateClass) :: HNil
       val constructor = makeCons(consProps)
       val toGenericInstance = makeUnCons(consProps)
     }
     object TypedPolityClass extends PolityClass with TypedEntity {
-      import BaseProps._
+//      import BaseProps._
       type TypedInstance = Polity
       val instanceGen = Generic[Polity]
       val labelledInstanceGen = LabelledGeneric[Polity]
       
-      val consProps = one(BaseProps.name) :: multiple[TypedAppelationClass.type](BaseProps.appelation,TypedAppelationClass) :: HNil
+      val consProps = one(nameProp) :: multiple[TypedAppelationClass.type](appelation,TypedAppelationClass) :: HNil
       val constructor = makeCons(consProps)
       val toGenericInstance = makeUnCons(consProps)
     }
   }
   
   "SimpleGenericModel object" should "enable ModelDefinition with unique classes & properties" in {
-    val model =new SimpleGenericModelTest
+    val model =new BasePropsModel
     intercept[PropertyAlreadyDefinedException] { 
-      new GeneralProperties {
+      new PropertyModel {
         val namespace=""
         val name = prop[String]("name")
-      }
-      new GeneralProperties {
-        val namespace=""
-        val name = prop[Int]("name")
+        val name2 = prop[Int]("name")
       }
     }
   }
@@ -180,34 +181,31 @@ object Position {implicit val format=Json.format[Position]}
     check((a: A) => reads.reads(owrites.writes(a)).fold(_ => false, _ == a))
   
   it should "format generic entityClasses and properties paths to/from Json" in {
-    val model = new SimpleGenericModelTest
+    val model = new BasePropsModel with json
     import model._
 
-    Json.toJson(BaseProps.name) should equal(JsObject(Seq("propertyName" -> JsString(BaseProps.name.name))))
+    Json.toJson(model.name) should equal(JsObject(Seq("propertyName" -> JsString(model.name.name))))
     jsonCodecIdentity[Property]
     
     Json.toJson(PolityClass) should equal(JsObject(Seq("entityClassName" -> JsString(PolityClass.name))))
     jsonCodecIdentity[EntityClass]
   }
   it should "format generic untyped property paths to/from Json" in {
-    val model = new SimpleGenericModelTest
+    val model = new BasePropsModel with json
     import model._
-    import json._
+//    import json._
 
     jsonCodecIdentity[PropertyPath]
   }
   it should "format generic instance to/from Json" in {
-    val model = new SimpleGenericModelTest
+    val model = new BasePropsModel with json
     import model._
-    import json._
-    
     jsonCodecIdentity[GenericEntityInstance]
 
   }
   it should "format generic property-path assertions to/from Json" in {
-    val model = new SimpleGenericModelTest
+    val model = new BasePropsModel with json
     import model._
-    import json._
 //    val graphPosition = BaseProps.prop[Position]("graphPosition")
 //    val n=Json.toJson("name")
 ////    val a = SingleEntityPropertyDefined(PolityClass,"entityId",UntypedDirect(BaseProps.name),n,Prov(""))
