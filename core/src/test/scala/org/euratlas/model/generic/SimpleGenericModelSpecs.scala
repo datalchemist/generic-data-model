@@ -1,4 +1,5 @@
-package org.euratlas.model.generic
+package org.euratlas.model
+package generic
 
 import org.scalatest._
 import org.scalatest.prop.Checkers
@@ -9,7 +10,9 @@ import play.api.libs.json.{JsNull,JsString,JsValue,JsPath,Format, Json,JsObject,
 import scala.collection.immutable.Seq
 
 class SimpleGenericModelSpecs extends FlatSpec with Matchers with Checkers {
-  class SimpleGenericModelTest extends SimpleGenericModel {
+  import Untyped._
+  
+  class SimpleGenericModelTest { //extends SimpleGenericModel {
     case class Prov(content:String)
     type ModelAssertionProvenance=Prov
     implicit lazy val provFmt: Format[Prov] = Json.format[Prov]
@@ -53,18 +56,18 @@ class SimpleGenericModelSpecs extends FlatSpec with Matchers with Checkers {
     /** Generator for property-based testing */
     implicit val propGen = Arbitrary(Gen.oneOf(allProps))
     implicit val entityGen = Arbitrary(Gen.oneOf(PolityClass,AppelationClass,DateClass))
-    def pathGen(lvl:Int=0) : Gen[UntypedPropertyPath]=
+    def pathGen(lvl:Int=0) : Gen[PropertyPath]=
       if (lvl > 5)
         Gen.oneOf(
-          Gen.oneOf(valueProps).map(UntypedDirect),
-          Gen.oneOf(refProps).map(UntypedDirectRef)
+          Gen.oneOf(valueProps).map(Direct),
+          Gen.oneOf(refProps).map(DirectRef)
         )
       else
         Gen.oneOf(
-          Gen.oneOf(valueProps).map(UntypedDirect),
-          Gen.oneOf(refProps).map(UntypedDirectRef),
-          for {prop <- Gen.oneOf(subProps); subPath <- pathGen(lvl+1)} yield UntypedSubPath(prop,subPath),
-          for {prop <- Gen.oneOf(subProps); subPath <- pathGen(lvl+1); idx <- arbitrary[Int]} yield UntypedSubIndexedPath(prop,idx,subPath)
+          Gen.oneOf(valueProps).map(Direct),
+          Gen.oneOf(refProps).map(DirectRef),
+          for {prop <- Gen.oneOf(subProps); subPath <- pathGen(lvl+1)} yield SubPath(prop,subPath),
+          for {prop <- Gen.oneOf(subProps); subPath <- pathGen(lvl+1); idx <- arbitrary[Int]} yield SubIndexedPath(prop,idx,subPath)
         )
     implicit val pathArbitrary = Arbitrary(pathGen())
     
@@ -78,41 +81,42 @@ class SimpleGenericModelSpecs extends FlatSpec with Matchers with Checkers {
         )
       }
     
-    def instValueGen(maxlvl:Int=2,usedSubProps:List[Property]=Nil) : Gen[UntypedGenericEntityInstance]=
+    def instValueGen(maxlvl:Int=2,usedSubProps:List[Property]=Nil) : Gen[GenericEntityInstance]=
       for {
         id <- arbitrary[String]
         propsMap <- Gen.mapOf[Property,Seq[JsValue]](for {prop <- Gen.oneOf(valueProps);v<-Gen.resize(3,Gen.listOf(jsValueGen(1)))} yield prop -> v)
         refsMap <- Gen.mapOf[Property,Seq[JsValue]](for {prop <- Gen.oneOf(refProps);v<-Gen.resize(3,Gen.listOf(jsValueGen(1)))} yield prop -> v)
         subsMap <- 
-          if (maxlvl >0) Gen.mapOf[Property,Seq[UntypedGenericEntityInstance]](for {prop <- Gen.oneOf(subProps.diff(usedSubProps));v<-Gen.listOfN(1,instValueGen(maxlvl-1,prop :: usedSubProps))} yield prop -> v)
-          else Gen.const[Map[Property,Seq[UntypedGenericEntityInstance]]](Map.empty)
-      } yield UntypedGenericEntityInstance(id,propsMap,refsMap,subsMap)
+          if (maxlvl >0) Gen.mapOf[Property,Seq[GenericEntityInstance]](for {prop <- Gen.oneOf(subProps.diff(usedSubProps));v<-Gen.listOfN(1,instValueGen(maxlvl-1,prop :: usedSubProps))} yield prop -> v)
+          else Gen.const[Map[Property,Seq[GenericEntityInstance]]](Map.empty)
+      } yield GenericEntityInstance(id,propsMap,refsMap,subsMap)
     implicit val instanceArbitrary = Arbitrary(instValueGen())
     
-    def assertionGen:Gen[ModelAssertion] =
-      Gen.oneOf(
+    def assertionGen:Gen[PropertyPathAssertion] =
+//      Gen.oneOf(
+//        for {
+//          entity <- arbitrary[EntityClass]
+//          id <- arbitrary[String]
+//          prov <- arbitrary[String].map(Prov(_))
+//          a <- Gen.oneOf(
+//            EntityDefined(entity,id,prov),
+//            EntityUndefined(entity,id,prov)
+//          )
+//        } yield a,
         for {
-          entity <- arbitrary[EntityClass]
-          id <- arbitrary[String]
-          prov <- arbitrary[String].map(Prov(_))
+//          entity <- arbitrary[EntityClass]
+//          id <- arbitrary[String]
+          propPath <- arbitrary[PropertyPath]
+//          prov <- arbitrary[String].map(Prov(_))
           a <- Gen.oneOf(
-            EntityDefined(entity,id,prov),
-            EntityUndefined(entity,id,prov)
-          )
-        } yield a,
-        for {
-          entity <- arbitrary[EntityClass]
-          id <- arbitrary[String]
-          propPath <- arbitrary[UntypedPropertyPath]
-          prov <- arbitrary[String].map(Prov(_))
-          a <- Gen.oneOf(
-              jsValueGen(1).map(value=>SingleEntityPropertyDefined(entity,id,propPath,value,prov)),
-              Gen.const(PropertyUndefined(entity,id,propPath,prov)),
-              jsValueGen(1).map(value=>EntityPropertyAdded(entity,id,propPath,value,prov)),
-              arbitrary[Int].map(i=>EntityPropertyRemoved(entity,id,propPath,i,prov))
+              jsValueGen(1).map(value=>PropertyPathAssertion(propPath,Set(value))),
+              Gen.const(PropertyPathAssertion(propPath,Unset())),
+              jsValueGen(1).map(value=>PropertyPathAssertion(propPath,Add(value))),
+              arbitrary[Int].map(i=>PropertyPathAssertion(propPath,Remove(i))),
+              arbitrary[Int].flatMap(i=>jsValueGen(1).map(value=>PropertyPathAssertion(propPath,SetAt(i,value))))
           )
         } yield a
-      )
+//      )
     implicit val modelAssertionArbitrary = Arbitrary(assertionGen)
   }
   
@@ -124,8 +128,10 @@ class SimpleGenericModelSpecs extends FlatSpec with Matchers with Checkers {
 case class Position(x:Int,y:Int)
 object Position {implicit val format=Json.format[Position]}
   
-  class SimpleTypedModelTest extends SimpleGenericModelTest with TypedModel {
+  class SimpleTypedModelTest extends SimpleGenericModelTest { //with TypedModel {
     import shapeless._
+    import typed._
+//    import TypedEntity._
     object TypedDateClass extends DateClass with TypedEntity {
       type TypedInstance = Date
       val instanceGen = Generic[Date]
@@ -154,12 +160,12 @@ object Position {implicit val format=Json.format[Position]}
   
   "SimpleGenericModel object" should "enable ModelDefinition with unique classes & properties" in {
     val model =new SimpleGenericModelTest
-    intercept[model.PropertyAlreadyDefinedException] { 
-      new model.GeneralProperties {
+    intercept[PropertyAlreadyDefinedException] { 
+      new GeneralProperties {
         val namespace=""
         val name = prop[String]("name")
       }
-      new model.GeneralProperties {
+      new GeneralProperties {
         val namespace=""
         val name = prop[Int]("name")
       }
@@ -186,28 +192,31 @@ object Position {implicit val format=Json.format[Position]}
   it should "format generic untyped property paths to/from Json" in {
     val model = new SimpleGenericModelTest
     import model._
+    import json._
 
-    jsonCodecIdentity[UntypedPropertyPath]
+    jsonCodecIdentity[PropertyPath]
   }
   it should "format generic instance to/from Json" in {
     val model = new SimpleGenericModelTest
     import model._
+    import json._
     
-    jsonCodecIdentity[UntypedGenericEntityInstance]
+    jsonCodecIdentity[GenericEntityInstance]
 
   }
-  it should "format generic assertions to/from Json" in {
+  it should "format generic property-path assertions to/from Json" in {
     val model = new SimpleGenericModelTest
     import model._
-    val graphPosition = BaseProps.prop[Position]("graphPosition")
-    val n=Json.toJson("name")
-//    val a = SingleEntityPropertyDefined(PolityClass,"entityId",UntypedDirect(BaseProps.name),n,Prov(""))
-    val a=EntityUndefined(PolityClass,"",Prov(""))
-    implicit val assertionFmt=ModelAssertion.fmt
-    println(Json.toJson(a))
-    println(Json.fromJson[ModelAssertion](Json.toJson(a)))
-    Json.fromJson[ModelAssertion](Json.toJson(a)).get should equal(a)
-    jsonCodecIdentity[ModelAssertion]
+    import json._
+//    val graphPosition = BaseProps.prop[Position]("graphPosition")
+//    val n=Json.toJson("name")
+////    val a = SingleEntityPropertyDefined(PolityClass,"entityId",UntypedDirect(BaseProps.name),n,Prov(""))
+//    val a=EntityUndefined(PolityClass,"",Prov(""))
+//    implicit val assertionFmt=ModelAssertion.fmt
+//    println(Json.toJson(a))
+//    println(Json.fromJson[ModelAssertion](Json.toJson(a)))
+//    Json.fromJson[ModelAssertion](Json.toJson(a)).get should equal(a)
+    jsonCodecIdentity[PropertyPathAssertion]
   }
   
   
