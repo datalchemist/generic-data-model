@@ -132,14 +132,14 @@ import scala.collection.immutable.Seq
     
     case class PropertyPathAssertion[V](propertyPath:PropertyPath[V],operation:PropertyOperation[V])
     
-//    case class EntityInstanceRef[E<:EntityClass](entityClass:E,instanceId:String)
-//    
-//    sealed trait Assertion[E<:EntityClass] {
-//      def instanceRef:EntityInstanceRef[E]
-//      def operation:AssertionOperation
-//    }
-//    case class InstanceAssertion[E<:EntityClass](instanceRef:EntityInstanceRef[E],operation:InstanceOperation) extends Assertion[E]
-//    case class PropertyAssertion[E<:EntityClass,V](instanceRef:EntityInstanceRef[E],propertyPath:PropertyPath[V],operation:PropertyOperation[V]) extends Assertion[E]
+    case class EntityInstanceRef[E<:EntityClass](entityClass:E,instanceId:String)
+    
+    sealed trait Assertion[E<:EntityClass] {
+      def instanceRef:EntityInstanceRef[E]
+      def operation:AssertionOperation
+    }
+    case class InstanceDefinitionAssertion[E<:EntityClass](instanceRef:EntityInstanceRef[E],operation:InstanceOperation) extends Assertion[E]
+    case class InstancePropertyAssertion[E<:EntityClass,V](instanceRef:EntityInstanceRef[E],propertyPath:PropertyPath[V],operation:PropertyOperation[V]) extends Assertion[E]
   }
   
   object DSL {
@@ -168,6 +168,11 @@ import scala.collection.immutable.Seq
       def -->[V](s:PropertyPath[V]):  PropertyPath[V] = b --> SubIndexedPath(n,i,s)  
     }  
     
+    
+    implicit class RichEntity[E<:EntityClass](entity:E) {
+      def apply(entityInstance:String)=new EntityInstanceRef(entity,entityInstance)
+    }
+    
     implicit class RichPropPath[V](prop:PropertyPath[V]) {
       class RichIndexedPropPath(idx:Int) {
         def :=(v:V) =
@@ -182,6 +187,13 @@ import scala.collection.immutable.Seq
       def rem(i:Int) =
         PropertyPathAssertion(prop,Remove(i))
       def apply(i:Int) = new RichIndexedPropPath(i)
+    }
+    implicit def defineInstance[E<:EntityClass](ref:EntityInstanceRef[E])=
+      InstanceDefinitionAssertion(ref,Define)
+    implicit def undefineInstance[E<:EntityClass](ref:EntityInstanceRef[E])=
+      InstanceDefinitionAssertion(ref,Undefine)      
+    implicit class RichPropPathAssertion[V](prop:PropertyPathAssertion[V]) {
+      def on[E<:EntityClass](ref:EntityInstanceRef[E])=InstancePropertyAssertion(ref,prop.propertyPath,prop.operation)
     }
   }
   
@@ -229,25 +241,36 @@ import scala.collection.immutable.Seq
     object PropertyPathAssertion {
       def apply[V](pa:Typed.PropertyPathAssertion[V]):PropertyPathAssertion=
         PropertyPathAssertion(PropertyPath(pa.propertyPath),PropertyOperation(pa.operation)(pa.propertyPath.valueFormat))
+      implicit def apply(pa:InstancePropertyAssertion):PropertyPathAssertion=PropertyPathAssertion(pa.propertyPath,pa.operation)
     }
     
-//    case class EntityInstanceRef(entityClass:EntityClass,instanceId:String)
-//    object EntityInstanceRef {
-//      def apply(r:Typed.EntityInstanceRef[_ <:EntityClass]):EntityInstanceRef=EntityInstanceRef(r.entityClass,r.instanceId)
-//    }
-//    sealed trait Assertion {
-//      def instanceRef:EntityInstanceRef
-//      def operation:AssertionOperation
-//    }
-//    case class InstanceAssertion(instanceRef:EntityInstanceRef,operation:InstanceOperation) extends Assertion
-//    case class PropertyAssertion(instanceRef:EntityInstanceRef,propertyPath:PropertyPath,operation:PropertyOperation) extends Assertion
-//  
-//    object Assertion {
-//      def apply(a:Typed.Assertion[_ <:EntityClass])=a match {
-//        case Typed.InstanceAssertion(r,o) => InstanceAssertion(EntityInstanceRef(r),o)
-//        case Typed.PropertyAssertion(r,p,o) => PropertyAssertion(EntityInstanceRef(r),PropertyPath(p),PropertyOperation(o)(p.valueFormat))
-//      }
-//    }
+    case class EntityInstanceRef(entityClass:EntityClass,instanceId:String)
+    object EntityInstanceRef {
+      def apply(r:Typed.EntityInstanceRef[_ <:EntityClass]):EntityInstanceRef=EntityInstanceRef(r.entityClass,r.instanceId)
+    }
+    sealed trait Assertion {
+      def instanceRef:EntityInstanceRef
+      def operation:AssertionOperation
+    }
+    case class InstanceDefinitionAssertion(instanceRef:EntityInstanceRef,operation:InstanceOperation) extends Assertion
+    case class InstancePropertyAssertion(instanceRef:EntityInstanceRef,propertyPath:PropertyPath,operation:PropertyOperation) extends Assertion
+  
+    object InstanceDefinitionAssertion {
+      def apply(a:Typed.InstanceDefinitionAssertion[_ <:EntityClass]):InstanceDefinitionAssertion=
+        InstanceDefinitionAssertion(EntityInstanceRef(a.instanceRef),a.operation)
+    }
+    object InstancePropertyAssertion {
+      def apply(a:Typed.InstancePropertyAssertion[_ <:EntityClass,_]):InstancePropertyAssertion=a match {
+        case Typed.InstancePropertyAssertion(r,p,o) => InstancePropertyAssertion(EntityInstanceRef(r),PropertyPath(p),PropertyOperation(o)(p.valueFormat))
+      }
+    }    
+    
+    object Assertion {
+      implicit def apply(a:Typed.Assertion[_ <:EntityClass])=a match {
+        case Typed.InstanceDefinitionAssertion(r,o) => InstanceDefinitionAssertion(EntityInstanceRef(r),o)
+        case Typed.InstancePropertyAssertion(r,p,o) => InstancePropertyAssertion(EntityInstanceRef(r),PropertyPath(p),PropertyOperation(o)(p.valueFormat))
+      }
+    }
     
     case class GenericEntityInstance(id:String,
         propertiesMap:Map[Property,Seq[JsValue]],
@@ -274,7 +297,7 @@ import scala.collection.immutable.Seq
         subEntitiesMap.updated(prop, subEnts.updated(i, update(subEnts(i))))
       }
       
-      private def getPropRec(p:PropertyPath):Seq[JsValue]=p match {
+      def getPropRec(p:PropertyPath):Seq[JsValue]=p match {
         case SubIndexedPath(p,i,n) => subEntities(p).drop(i).headOption.getOrElse(newSubEntity(p,Some(i))).getPropRec(n)
         case SubPath(p,n) => subEntity(p).getPropRec(n)
         case Direct(p) => propertiesMap.getOrElse(p, Seq.empty)
@@ -339,6 +362,9 @@ import scala.collection.immutable.Seq
     }
     
     trait json { self:PropertyModel with EntityModel =>
+      import play.api.libs.json.Reads._ // Custom validation helpers
+      import play.api.libs.functional.syntax._ // Combinator syntax
+      
       /** Json format based on name-based EntityClasses registry */
       implicit lazy val eFmt:Format[EntityClass]={
         import play.api.libs.json._ // JSON library
@@ -374,9 +400,101 @@ import scala.collection.immutable.Seq
           Writes((v:Map[Property,V]) => Json.toJson(v.map{case (p,v) => p.name -> v}))
       )      
       
-      implicit lazy val ppFmt : OFormat[PropertyPath] = JsonDerivation.oformat[PropertyPath]()
+      implicit lazy val ppFmt : OFormat[PropertyPath] = {
+        
+        
+        JsonDerivation.oformat[PropertyPath]()
+      }
       implicit lazy val poFmt : OFormat[PropertyOperation] = JsonDerivation.oformat[PropertyOperation]()
       implicit lazy val ppaFmt : Format[PropertyPathAssertion] = Json.format[PropertyPathAssertion]
+      implicit lazy val eirFmt : Format[EntityInstanceRef] = Json.format[EntityInstanceRef]
+      implicit lazy val ioFmt : Format[InstanceOperation] = JsonDerivation.oformat[InstanceOperation]()
+      implicit lazy val idaFmt : Format[InstanceDefinitionAssertion] = {
+        val oldInstanceDefAssertionReads: Reads[InstanceDefinitionAssertion] = {
+          (__ \ "type").read[String].flatMap {
+            case "EntityDefined" => (
+              (__ \ "entity").read[EntityClass] and
+              (__ \ "entityInstance").read[String]
+            )((cls,id) => EntityInstanceRef(cls,id)).map(InstanceDefinitionAssertion(_,Define))
+            case "EntityUndefined" => (
+              (__ \ "entity").read[EntityClass] and
+              (__ \ "entityInstance").read[String]
+            )((cls,id) => EntityInstanceRef(cls,id)).map(InstanceDefinitionAssertion(_,Undefine)) 
+//              EntityUndefined.fmt.map(identity)
+            case other => Reads(v => JsError(s"Unknown InstanceDefinitionAssertion type $other"))
+          }
+        }
+        Format(
+          Json.format[InstanceDefinitionAssertion].orElse(oldInstanceDefAssertionReads),
+          Json.format[InstanceDefinitionAssertion]
+        )
+      }
+      implicit lazy val ipaFmt : Format[InstancePropertyAssertion] = {
+        sealed trait UntypedPropertyPath {
+          def refEntity:Option[Property]
+        }
+        case class UntypedDirect(p:Property) extends UntypedPropertyPath{def refEntity=None}
+        case class UntypedDirectRef(p:Property) extends UntypedPropertyPath{def refEntity=Some(p)}
+        case class UntypedSubPath(p:Property,n:UntypedPropertyPath) extends UntypedPropertyPath{def refEntity=n.refEntity}
+        case class UntypedSubIndexedPath(p:Property,i:Int,n:UntypedPropertyPath) extends UntypedPropertyPath{def refEntity=n.refEntity}
+        object UntypedPropertyPath {
+          implicit def toPropertyPath(p:UntypedPropertyPath):PropertyPath = p match {
+            case UntypedDirect(p) => Direct(p)
+            case UntypedDirectRef(p) => DirectRef(p)
+            case UntypedSubPath(p,n) => SubPath(p,n)
+            case UntypedSubIndexedPath(p,i,n) => SubIndexedPath(p,i,n)
+          }
+          implicit lazy val fmt : OFormat[UntypedPropertyPath] = JsonDerivation.oformat[UntypedPropertyPath]()
+        }        
+        val oldPropertyPathReads: Reads[PropertyPath] = {
+          UntypedPropertyPath.fmt.map(UntypedPropertyPath.toPropertyPath)
+        }        
+        val oldInstancePropAssertionReads: Reads[InstancePropertyAssertion] = 
+          (__ \ "type").read[String].flatMap {
+            case "SingleEntityPropertyDefined" =>  (
+              (__ \ "entity").read[EntityClass] and
+              (__ \ "entityInstance").read[String] and
+              (__ \ "property").read[PropertyPath](oldPropertyPathReads) and
+              (__ \ "value").read[JsValue]
+            )((cls,id,p,v) => InstancePropertyAssertion(EntityInstanceRef(cls,id),p,Set(v)))
+            case "PropertyUndefined" =>   (
+              (__ \ "entity").read[EntityClass] and
+              (__ \ "entityInstance").read[String] and
+              (__ \ "property").read[PropertyPath](oldPropertyPathReads)
+            )((cls,id,p) => InstancePropertyAssertion(EntityInstanceRef(cls,id),p,Unset()))
+            case "EntityPropertyAdded" =>  (
+              (__ \ "entity").read[EntityClass] and
+              (__ \ "entityInstance").read[String] and
+              (__ \ "property").read[PropertyPath](oldPropertyPathReads) and
+              (__ \ "value").read[JsValue]
+            )((cls,id,p,v) => InstancePropertyAssertion(EntityInstanceRef(cls,id),p,Add(v)))
+            case "EntityPropertyRemoved" =>  (
+              (__ \ "entity").read[EntityClass] and
+              (__ \ "entityInstance").read[String] and
+              (__ \ "property").read[PropertyPath](oldPropertyPathReads) and
+              (__ \ "removeIdx").read[Int]
+            )((cls,id,p,v) => InstancePropertyAssertion(EntityInstanceRef(cls,id),p,Remove(v)))
+            case other => Reads(v => JsError(s"Unknown InstancePropertyAssertion type $other"))
+        }
+        
+        Format(
+          Json.format[InstancePropertyAssertion].orElse(oldInstancePropAssertionReads),    
+          Json.format[InstancePropertyAssertion]
+        )
+      }
+      implicit lazy val aFmt : Format[Assertion] = {
+        val reads: Reads[Assertion] = {
+          ipaFmt.map(identity[Assertion])
+          .orElse(idaFmt.map(identity[Assertion]))
+        }
+        val writes: Writes[Assertion] = Writes { event =>
+          event match {
+            case m: InstanceDefinitionAssertion => (Json.toJson(m)(idaFmt.writes))
+            case m: InstancePropertyAssertion => (Json.toJson(m)(ipaFmt))
+          }
+        }
+        Format(reads,writes)
+      }      
       import play.api.libs.json.Reads._ // Custom validation helpers
       import play.api.libs.functional.syntax._ // Combinator syntax
       
@@ -388,13 +506,3 @@ import scala.collection.immutable.Seq
       )(GenericEntityInstance.apply, unlift(GenericEntityInstance.unapply))
     }
   }  
-  
-  
-  
-  
-//} 
-
-
-trait TypedModelrrr {
- 
-}
