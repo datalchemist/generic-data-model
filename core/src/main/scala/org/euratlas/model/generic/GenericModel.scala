@@ -173,6 +173,8 @@ import scala.collection.immutable.Seq
       def apply(entityInstance:String)=new EntityInstanceRef(entity,entityInstance)
     }
     
+    implicit def RichValueProperty[V](prop:ValueProperty[V])=new RichPropPath(Direct(prop))
+    implicit def RichReferenceProperty[V](prop:ReferenceProperty[_<:EntityClass,V])=new RichPropPath(DirectRef(prop))
     implicit class RichPropPath[V](prop:PropertyPath[V]) {
       class RichIndexedPropPath(idx:Int) {
         def :=(v:V) =
