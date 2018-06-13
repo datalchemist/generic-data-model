@@ -152,20 +152,24 @@ import scala.collection.immutable.Seq
     implicit class subPathGenBase[S<:EntityClass](p:SubEntityProperty[S]) extends subPathGen {
       def -->[SS<:EntityClass,V](s:SubEntityProperty[SS])=new subPathGenRec[S,SS](this,s)
       def -->[V](s:PropertyPath[V])=SubPath[S,V](p,s)
+      def -->[V](ppa:PropertyPathAssertion[V])=ppa.copy(propertyPath = SubPath[S,V](p,ppa.propertyPath))
       
       def --(i:Int)=new subPathGenIdxBase(p,i)
     }
     class subPathGenIdxBase[S<:EntityClass](p:SubEntityProperty[S],i:Int) extends subPathGen {
       def -->[SS<:EntityClass,V](s:SubEntityProperty[SS])=new subPathGenRec[S,SS](this,s)
       def -->[V](s:PropertyPath[V])=SubIndexedPath[S,V](p,i,s)
+      def -->[V](ppa:PropertyPathAssertion[V])=ppa.copy(propertyPath = SubIndexedPath[S,V](p,i,ppa.propertyPath))
     }
     class subPathGenRec[E<:EntityClass,S<:EntityClass](b:subPathGen,n:SubEntityProperty[S]) extends subPathGen  {
       def -->[V](s:PropertyPath[V]):  PropertyPath[V] = b --> SubPath(n,s)  
+      def -->[V](ppa:PropertyPathAssertion[V])=ppa.copy(propertyPath = b --> SubPath[S,V](n,ppa.propertyPath))
       
       def --(i:Int)=new subPathGenIdxRec(b,n,i)
     }
     class subPathGenIdxRec[E<:EntityClass,S<:EntityClass](b:subPathGen,n:SubEntityProperty[S],i:Int) extends subPathGen  {
       def -->[V](s:PropertyPath[V]):  PropertyPath[V] = b --> SubIndexedPath(n,i,s)  
+      def -->[V](ppa:PropertyPathAssertion[V])=ppa.copy(propertyPath = b --> SubIndexedPath[S,V](n,i,ppa.propertyPath))
     }  
     
     

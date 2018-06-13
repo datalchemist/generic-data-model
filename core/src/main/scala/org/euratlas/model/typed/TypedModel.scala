@@ -95,8 +95,14 @@ import scala.collection.immutable.Seq
               
         })
       
+      /** TODO
+       *  14.06.18: Remove min card check for unique subentity: check will fail at sub-entity construction
+       *  	This allows to have "optional" subentities (with only option fields) without defining any field
+       */
+        
       implicit def caseSS[TS<:TypedEntity] = at[SingleSubEntity[TS]](x => (instance:GenericEntityInstance) => instance.subEntities(x.prop) match {
-        case empty if empty.isEmpty => Left(UniquePropertyNotDefined(x)) : Validated[TS#TypedInstance]
+//        case empty if empty.isEmpty => Left(UniquePropertyNotDefined(x)) : Validated[TS#TypedInstance]
+        case empty if empty.isEmpty => (x.ts.constructor(new GenericEntityInstance("",Map.empty,Map.empty,Map.empty))) : Validated[TS#TypedInstance]
         case Seq(v) => (x.ts.constructor(v)) : Validated[TS#TypedInstance]
         case mutliple if !x.unique => (x.ts.constructor(mutliple.head)) : Validated[TS#TypedInstance]
         case _  => Left(UniquePropertyDefinedMultipleTimes(x)) : Validated[TS#TypedInstance]
