@@ -108,29 +108,42 @@ import scala.collection.immutable.Seq
   case object Undefine extends InstanceOperation
   object Typed {
     sealed trait PropertyPath[V]{
-      def valueFormat:Format[V]
       def refEntity:Option[ReferenceProperty[_<:EntityClass,V]]
     }
-    case class Direct[V](p:ValueProperty[V]) extends PropertyPath[V]{def refEntity=None;def valueFormat=p.fmt}
-    case class DirectRef[R<:EntityClass,V](p:ReferenceProperty[R,V]) extends PropertyPath[V]{def refEntity=Some(p);def valueFormat=p.fmt}
-    case class SubPath[S<:EntityClass,V](p:SubEntityProperty[S],n:PropertyPath[V]) extends PropertyPath[V]{def refEntity=n.refEntity;def valueFormat=n.valueFormat}
-    case class SubIndexedPath[S<:EntityClass,V](p:SubEntityProperty[S],i:Int,n:PropertyPath[V]) extends PropertyPath[V]{def refEntity=n.refEntity;def valueFormat=n.valueFormat}
+    trait ValuePropertyPath[V] extends PropertyPath[V] {
+      def valueFormat:Format[V]
+    }
+    case class Direct[V](p:ValueProperty[V]) extends ValuePropertyPath[V]{def refEntity=None;def valueFormat=p.fmt}
+    case class DirectRef[R<:EntityClass,V](p:ReferenceProperty[R,V]) extends ValuePropertyPath[V]{def refEntity=Some(p);def valueFormat=p.fmt}
+    case class DirectSub[S<:EntityClass](p:SubEntityProperty[S]) extends PropertyPath[S]{def refEntity=None}
+    case class SubPath[S<:EntityClass,V](p:SubEntityProperty[S],n:PropertyPath[V]) extends PropertyPath[V]{def refEntity=n.refEntity}//;def valueFormat=n.valueFormat}
+    case class SubIndexedPath[S<:EntityClass,V](p:SubEntityProperty[S],i:Int,n:PropertyPath[V]) extends PropertyPath[V]{def refEntity=n.refEntity}//;def valueFormat=n.valueFormat}
+    case class ValueSubPath[S<:EntityClass,V](p:SubEntityProperty[S],n:ValuePropertyPath[V]) extends ValuePropertyPath[V]{def refEntity=n.refEntity;def valueFormat=n.valueFormat}
+    case class ValueSubIndexedPath[S<:EntityClass,V](p:SubEntityProperty[S],i:Int,n:ValuePropertyPath[V]) extends ValuePropertyPath[V]{def refEntity=n.refEntity;def valueFormat=n.valueFormat}
     object PropertyPath {
       implicit def direct[V](p:ValueProperty[V])=Direct(p)
       implicit def directRef[R<:EntityClass,V](p:ReferenceProperty[R,V])=DirectRef(p)
+      implicit def directSub[S<:EntityClass](p:SubEntityProperty[S])=DirectSub(p)
+      
     }    
     
     /** Operations on property path value */
     sealed trait PropertyOperation[V] extends AssertionOperation
+    trait NoValuePropertyOperation[V] extends PropertyOperation[V]
+    trait ValuePropertyOperation[V] extends PropertyOperation[V]
     /** Single value operation */
-    case class Set[V](v:V) extends PropertyOperation[V]
-    case class Unset[V]() extends PropertyOperation[V]
+    case class Set[V](v:V) extends ValuePropertyOperation[V]
+    case class Unset[V]() extends NoValuePropertyOperation[V]
     /** List values operation */
-    case class Add[V](v:V) extends PropertyOperation[V]
-    case class SetAt[V](idx:Int,v:V) extends PropertyOperation[V]
-    case class Remove[V](idx:Int) extends PropertyOperation[V]
+    case class Add[V](v:V) extends ValuePropertyOperation[V]
+    case class SetAt[V](idx:Int,v:V) extends ValuePropertyOperation[V]
+    case class Remove[V](idx:Int) extends NoValuePropertyOperation[V]
     
-    case class PropertyPathAssertion[V](propertyPath:PropertyPath[V],operation:PropertyOperation[V])
+    sealed trait PropertyPathAssertion[V]{
+      def propertyPath:PropertyPath[V]
+    }
+    case class ValuePropertyPathAssertion[V](propertyPath:ValuePropertyPath[V],operation:ValuePropertyOperation[V]) extends PropertyPathAssertion[V]
+    case class NoValuePropertyPathAssertion[V](propertyPath:PropertyPath[V],operation:NoValuePropertyOperation[V]) extends PropertyPathAssertion[V]
     
     case class EntityInstanceRef[E<:EntityClass](entityClass:E,instanceId:String)
     
@@ -139,7 +152,8 @@ import scala.collection.immutable.Seq
       def operation:AssertionOperation
     }
     case class InstanceDefinitionAssertion[E<:EntityClass](instanceRef:EntityInstanceRef[E],operation:InstanceOperation) extends Assertion[E]
-    case class InstancePropertyAssertion[E<:EntityClass,V](instanceRef:EntityInstanceRef[E],propertyPath:PropertyPath[V],operation:PropertyOperation[V]) extends Assertion[E]
+    case class InstanceValuePropertyAssertion[E<:EntityClass,V](instanceRef:EntityInstanceRef[E],propertyPath:ValuePropertyPath[V],operation:ValuePropertyOperation[V]) extends Assertion[E]
+    case class InstanceNoValuePropertyAssertion[E<:EntityClass,V](instanceRef:EntityInstanceRef[E],propertyPath:PropertyPath[V],operation:NoValuePropertyOperation[V]) extends Assertion[E]
   }
   
   object DSL {
@@ -147,29 +161,38 @@ import scala.collection.immutable.Seq
     
     /** Property-path construction DSL */
     sealed trait subPathGen {
-      def -->[V](s:PropertyPath[V]):  PropertyPath[V] 
+      def -|->[V](s:PropertyPath[V]):  PropertyPath[V] 
+      def -->[V](s:ValuePropertyPath[V]):  ValuePropertyPath[V] 
     }
     implicit class subPathGenBase[S<:EntityClass](p:SubEntityProperty[S]) extends subPathGen {
       def -->[SS<:EntityClass,V](s:SubEntityProperty[SS])=new subPathGenRec[S,SS](this,s)
-      def -->[V](s:PropertyPath[V])=SubPath[S,V](p,s)
-      def -->[V](ppa:PropertyPathAssertion[V])=ppa.copy(propertyPath = SubPath[S,V](p,ppa.propertyPath))
+      def -|->[V](s:PropertyPath[V])=SubPath[S,V](p,s)
+      def -->[V](s:ValuePropertyPath[V])=ValueSubPath[S,V](p,s)
+      def -|->[V](ppa:NoValuePropertyPathAssertion[V])=ppa.copy(propertyPath = SubPath[S,V](p,ppa.propertyPath))
+      def -->[V](ppa:ValuePropertyPathAssertion[V])=ppa.copy(propertyPath = ValueSubPath[S,V](p,ppa.propertyPath))
       
       def --(i:Int)=new subPathGenIdxBase(p,i)
     }
     class subPathGenIdxBase[S<:EntityClass](p:SubEntityProperty[S],i:Int) extends subPathGen {
       def -->[SS<:EntityClass,V](s:SubEntityProperty[SS])=new subPathGenRec[S,SS](this,s)
-      def -->[V](s:PropertyPath[V])=SubIndexedPath[S,V](p,i,s)
-      def -->[V](ppa:PropertyPathAssertion[V])=ppa.copy(propertyPath = SubIndexedPath[S,V](p,i,ppa.propertyPath))
+      def -|->[V](s:PropertyPath[V])=SubIndexedPath[S,V](p,i,s)
+      def -->[V](s:ValuePropertyPath[V])=ValueSubIndexedPath[S,V](p,i,s)
+      def -|->[V](ppa:NoValuePropertyPathAssertion[V])=ppa.copy(propertyPath = SubIndexedPath[S,V](p,i,ppa.propertyPath))
+      def -->[V](ppa:ValuePropertyPathAssertion[V])=ppa.copy(propertyPath = ValueSubIndexedPath[S,V](p,i,ppa.propertyPath))
     }
     class subPathGenRec[E<:EntityClass,S<:EntityClass](b:subPathGen,n:SubEntityProperty[S]) extends subPathGen  {
-      def -->[V](s:PropertyPath[V]):  PropertyPath[V] = b --> SubPath(n,s)  
-      def -->[V](ppa:PropertyPathAssertion[V])=ppa.copy(propertyPath = b --> SubPath[S,V](n,ppa.propertyPath))
+      def -|->[V](s:PropertyPath[V]):  PropertyPath[V] = b -|-> SubPath(n,s)
+      def -->[V](s:ValuePropertyPath[V]):  ValuePropertyPath[V] = b --> ValueSubPath(n,s)  
+      def -|->[V](ppa:NoValuePropertyPathAssertion[V])=ppa.copy(propertyPath = b -|-> SubPath[S,V](n,ppa.propertyPath))
+      def -->[V](ppa:ValuePropertyPathAssertion[V])=ppa.copy(propertyPath = b --> ValueSubPath[S,V](n,ppa.propertyPath))
       
       def --(i:Int)=new subPathGenIdxRec(b,n,i)
     }
     class subPathGenIdxRec[E<:EntityClass,S<:EntityClass](b:subPathGen,n:SubEntityProperty[S],i:Int) extends subPathGen  {
-      def -->[V](s:PropertyPath[V]):  PropertyPath[V] = b --> SubIndexedPath(n,i,s)  
-      def -->[V](ppa:PropertyPathAssertion[V])=ppa.copy(propertyPath = b --> SubIndexedPath[S,V](n,i,ppa.propertyPath))
+      def -|->[V](s:PropertyPath[V]):  PropertyPath[V] = b -|-> SubIndexedPath(n,i,s)
+      def -->[V](s:ValuePropertyPath[V]):  ValuePropertyPath[V] = b --> ValueSubIndexedPath(n,i,s) 
+      def -|->[V](ppa:NoValuePropertyPathAssertion[V])=ppa.copy(propertyPath = b -|-> SubIndexedPath[S,V](n,i,ppa.propertyPath))
+      def -->[V](ppa:ValuePropertyPathAssertion[V])=ppa.copy(propertyPath = b --> ValueSubIndexedPath[S,V](n,i,ppa.propertyPath))
     }  
     
     
@@ -179,27 +202,38 @@ import scala.collection.immutable.Seq
     
     implicit def RichValueProperty[V](prop:ValueProperty[V])=new RichPropPath(Direct(prop))
     implicit def RichReferenceProperty[V](prop:ReferenceProperty[_<:EntityClass,V])=new RichPropPath(DirectRef(prop))
-    implicit class RichPropPath[V](prop:PropertyPath[V]) {
+    implicit class RichPropPath[V](prop:ValuePropertyPath[V]) {
       class RichIndexedPropPath(idx:Int) {
         def :=(v:V) =
-          PropertyPathAssertion(prop,SetAt(idx,v))
+          ValuePropertyPathAssertion(prop,SetAt(idx,v))
       }
       def :=(v:V) =
-        PropertyPathAssertion(prop,Set(v))
+        ValuePropertyPathAssertion(prop,Set(v))
       def unset() =
-        PropertyPathAssertion(prop,Unset())
+        NoValuePropertyPathAssertion(prop,Unset())
       def add(v:V) =
-        PropertyPathAssertion(prop,Add(v))
+        ValuePropertyPathAssertion(prop,Add(v))
       def rem(i:Int) =
-        PropertyPathAssertion(prop,Remove(i))
+        NoValuePropertyPathAssertion(prop,Remove(i))
       def apply(i:Int) = new RichIndexedPropPath(i)
     }
+    implicit class RichNoValuePropPath[V](prop:PropertyPath[V]) {
+      def unset() =
+        NoValuePropertyPathAssertion(prop,Unset())
+      def rem(i:Int) =
+        NoValuePropertyPathAssertion(prop,Remove(i))
+    }    
+    
     implicit def defineInstance[E<:EntityClass](ref:EntityInstanceRef[E])=
       InstanceDefinitionAssertion(ref,Define)
     implicit def undefineInstance[E<:EntityClass](ref:EntityInstanceRef[E])=
       InstanceDefinitionAssertion(ref,Undefine)      
     implicit class RichPropPathAssertion[V](prop:PropertyPathAssertion[V]) {
-      def on[E<:EntityClass](ref:EntityInstanceRef[E])=InstancePropertyAssertion(ref,prop.propertyPath,prop.operation)
+      def on[E<:EntityClass](ref:EntityInstanceRef[E])=prop match {
+        case prop:ValuePropertyPathAssertion[V] => InstanceValuePropertyAssertion(ref,prop.propertyPath,prop.operation)
+        case prop:NoValuePropertyPathAssertion[V] => InstanceNoValuePropertyAssertion(ref,prop.propertyPath,prop.operation)
+      }
+      
     }
   }
   
@@ -211,16 +245,21 @@ import scala.collection.immutable.Seq
     }
     case class Direct(p:Property) extends PropertyPath{def refEntity=None}
     case class DirectRef(p:Property) extends PropertyPath{def refEntity=Some(p)}
+    case class DirectSub(p:Property) extends PropertyPath {def refEntity=None}    
     case class SubPath(p:Property,n:PropertyPath) extends PropertyPath{def refEntity=n.refEntity}
     case class SubIndexedPath(p:Property,i:Int,n:PropertyPath) extends PropertyPath{def refEntity=n.refEntity}
     object PropertyPath {
       implicit def direct(p:Property)=Direct(p)
       implicit def directRef(p:Property)=DirectRef(p)
+      implicit def directSub(p:Property)=DirectSub(p)
       def apply[V](pp:Typed.PropertyPath[V]):PropertyPath=pp match {
         case Typed.Direct(p) => Direct(p)
         case Typed.DirectRef(p) => DirectRef(p)
+        case Typed.DirectSub(p) => DirectSub(p)
         case Typed.SubPath(p,n) => SubPath(p,apply(n))
         case Typed.SubIndexedPath(p,i,n) => SubIndexedPath(p,i,apply(n))
+        case Typed.ValueSubPath(p,n) => SubPath(p,apply(n))
+        case Typed.ValueSubIndexedPath(p,i,n) => SubIndexedPath(p,i,apply(n))
       }
     }    
     
@@ -234,19 +273,26 @@ import scala.collection.immutable.Seq
     case class Remove(idx:Int) extends PropertyOperation
   
     object PropertyOperation {
-      def apply[V](a:Typed.PropertyOperation[V])(implicit f:Format[V])=a match {
-        case Typed.Set(v) => Set(Json.toJson(v))
+      def apply[V](a:Typed.NoValuePropertyOperation[V])=a match {
         case Typed.Unset() => Unset()
+        case Typed.Remove(i) => Remove(i)
+      }
+      def apply[V](a:Typed.ValuePropertyOperation[V])(implicit f:Format[V])=a match {
+        case Typed.Set(v) => Set(Json.toJson(v))
         case Typed.Add(v) => Add(Json.toJson(v))
         case Typed.SetAt(i,v) => SetAt(i,Json.toJson(v))
-        case Typed.Remove(i) => Remove(i)
       }
     }
     
     case class PropertyPathAssertion(propertyPath:PropertyPath,operation:PropertyOperation)
     object PropertyPathAssertion {
       def apply[V](pa:Typed.PropertyPathAssertion[V]):PropertyPathAssertion=
-        PropertyPathAssertion(PropertyPath(pa.propertyPath),PropertyOperation(pa.operation)(pa.propertyPath.valueFormat))
+        PropertyPathAssertion(PropertyPath(pa.propertyPath),
+          pa match {
+            case vpa:Typed.ValuePropertyPathAssertion[V] => PropertyOperation(vpa.operation)(vpa.propertyPath.valueFormat)
+            case nvpa:Typed.NoValuePropertyPathAssertion[V] => PropertyOperation(nvpa.operation)
+          }
+        )
       implicit def apply(pa:InstancePropertyAssertion):PropertyPathAssertion=PropertyPathAssertion(pa.propertyPath,pa.operation)
     }
     
@@ -266,15 +312,21 @@ import scala.collection.immutable.Seq
         InstanceDefinitionAssertion(EntityInstanceRef(a.instanceRef),a.operation)
     }
     object InstancePropertyAssertion {
-      def apply(a:Typed.InstancePropertyAssertion[_ <:EntityClass,_]):InstancePropertyAssertion=a match {
-        case Typed.InstancePropertyAssertion(r,p,o) => InstancePropertyAssertion(EntityInstanceRef(r),PropertyPath(p),PropertyOperation(o)(p.valueFormat))
+      def apply(a:Typed.InstanceValuePropertyAssertion[_ <:EntityClass,_]):InstancePropertyAssertion=a match {
+        case Typed.InstanceValuePropertyAssertion(r,p,o) => 
+          InstancePropertyAssertion(EntityInstanceRef(r),PropertyPath(p),PropertyOperation(o)(p.valueFormat))
+      }
+      def apply(a:Typed.InstanceNoValuePropertyAssertion[_ <:EntityClass,_]):InstancePropertyAssertion=a match {
+        case Typed.InstanceNoValuePropertyAssertion(r,p,o) => 
+          InstancePropertyAssertion(EntityInstanceRef(r),PropertyPath(p),PropertyOperation(o))
       }
     }    
     
     object Assertion {
       implicit def apply(a:Typed.Assertion[_ <:EntityClass])=a match {
         case Typed.InstanceDefinitionAssertion(r,o) => InstanceDefinitionAssertion(EntityInstanceRef(r),o)
-        case Typed.InstancePropertyAssertion(r,p,o) => InstancePropertyAssertion(EntityInstanceRef(r),PropertyPath(p),PropertyOperation(o)(p.valueFormat))
+        case Typed.InstanceValuePropertyAssertion(r,p,o) => InstancePropertyAssertion(EntityInstanceRef(r),PropertyPath(p),PropertyOperation(o)(p.valueFormat))
+        case Typed.InstanceNoValuePropertyAssertion(r,p,o) => InstancePropertyAssertion(EntityInstanceRef(r),PropertyPath(p),PropertyOperation(o))
       }
     }
     
@@ -303,17 +355,19 @@ import scala.collection.immutable.Seq
         subEntitiesMap.updated(prop, subEnts.updated(i, update(subEnts(i))))
       }
       
-      def getPropRec(p:PropertyPath):Seq[JsValue]=p match {
+      def getPropRec(p:PropertyPath)(implicit fmt: Format[GenericEntityInstance]):Seq[JsValue]=p match {
         case SubIndexedPath(p,i,n) => subEntities(p).drop(i).headOption.getOrElse(newSubEntity(p,Some(i))).getPropRec(n)
         case SubPath(p,n) => subEntity(p).getPropRec(n)
         case Direct(p) => propertiesMap.getOrElse(p, Seq.empty)
         case DirectRef(p) => referencesMap.getOrElse(p, Seq.empty)
+        case DirectSub(p) => subEntities(p).map(v => Json.toJson(v))
       }
       private def setPropRec(p:PropertyPath,v:JsValue):GenericEntityInstance=p match {
         case SubIndexedPath(p,i,n) => copy(subEntitiesMap=updateSubEntity(p,i,_.setPropRec(n,v)))
         case SubPath(p,n) => copy(subEntitiesMap=updateSubEntity(p,_.setPropRec(n,v)))
         case Direct(p) => copy(propertiesMap=propertiesMap.updated(p, Seq(v)))
         case DirectRef(p) => copy(referencesMap = referencesMap.updated(p, Seq(v)))
+        case DirectSub(p) => copy()        
       }
       private def setPropRecAt(p:PropertyPath,idx:Int,v:JsValue):GenericEntityInstance=p match {
         case SubIndexedPath(p,i,n) => copy(subEntitiesMap=updateSubEntity(p,i,_.setPropRecAt(n,idx,v)))
@@ -334,18 +388,21 @@ import scala.collection.immutable.Seq
               //idx not present, don't do anything @TODO
               copy()
           }
+        case DirectSub(p) => copy()        
       }
       private def unsetPropRec(p:PropertyPath):GenericEntityInstance=p match {
         case SubIndexedPath(p,i,n) => copy(subEntitiesMap=updateSubEntity(p,i,_.unsetPropRec(n)))
         case SubPath(p,n) => copy(subEntitiesMap=updateSubEntity(p,_.unsetPropRec(n)))
         case Direct(p) => copy(propertiesMap=propertiesMap - p)
         case DirectRef(p) => copy(referencesMap=referencesMap - p)
+        case DirectSub(p) => copy(subEntitiesMap=subEntitiesMap - p)        
       }
       private def addPropRec(p:PropertyPath,v:JsValue):GenericEntityInstance=p match {
         case SubIndexedPath(p,i,n) => copy(subEntitiesMap=updateSubEntity(p,i,_.addPropRec(n,v)))
         case SubPath(p,n) => copy(subEntitiesMap=updateSubEntity(p,_.addPropRec(n,v)))
         case Direct(p) => copy(propertiesMap=propertiesMap.updated(p, propertiesMap.getOrElse(p, Seq.empty) :+ v))
         case DirectRef(p) => copy(referencesMap=referencesMap.updated(p, referencesMap.getOrElse(p, Seq.empty) :+ v))
+        case DirectSub(p) => copy() 
       }
       private def removePropRec(p:PropertyPath,remIdx:Int):GenericEntityInstance=p match {
         case SubIndexedPath(p,i,n) => copy(subEntitiesMap=updateSubEntity(p,i,_.removePropRec(n,remIdx)))
@@ -363,6 +420,13 @@ import scala.collection.immutable.Seq
             case empty if empty.isEmpty => copy(referencesMap=referencesMap - p)
             //otherwise, update with new values
             case newVals => copy(referencesMap=referencesMap.updated(p, newVals))
+          }
+        case DirectSub(p) => 
+          subEntitiesMap.getOrElse(p, Seq.empty).zipWithIndex.collect{case (v,idx) if  idx != remIdx => v} match {
+            //no more values, unset property
+            case empty if empty.isEmpty => copy(subEntitiesMap=subEntitiesMap - p)
+            //otherwise, update with new values
+            case newVals => copy(subEntitiesMap=subEntitiesMap.updated(p, newVals))
           }
       }
     }
@@ -441,12 +505,14 @@ import scala.collection.immutable.Seq
         }
         case class UntypedDirect(p:Property) extends UntypedPropertyPath{def refEntity=None}
         case class UntypedDirectRef(p:Property) extends UntypedPropertyPath{def refEntity=Some(p)}
+        case class UntypedDirectSub(p:Property) extends UntypedPropertyPath{def refEntity=None}
         case class UntypedSubPath(p:Property,n:UntypedPropertyPath) extends UntypedPropertyPath{def refEntity=n.refEntity}
         case class UntypedSubIndexedPath(p:Property,i:Int,n:UntypedPropertyPath) extends UntypedPropertyPath{def refEntity=n.refEntity}
         object UntypedPropertyPath {
           implicit def toPropertyPath(p:UntypedPropertyPath):PropertyPath = p match {
             case UntypedDirect(p) => Direct(p)
             case UntypedDirectRef(p) => DirectRef(p)
+            case UntypedDirectSub(p) => DirectSub(p)
             case UntypedSubPath(p,n) => SubPath(p,n)
             case UntypedSubIndexedPath(p,i,n) => SubIndexedPath(p,i,n)
           }

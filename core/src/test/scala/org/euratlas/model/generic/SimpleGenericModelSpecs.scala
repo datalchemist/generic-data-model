@@ -172,7 +172,15 @@ object Position {implicit val format=Json.format[Position]}
       }
     }
   }
-  it should "create generic instance from generic property events" in (pending)
+  it should "create generic instance from generic property events" in {
+    import DSL._
+    import Typed._
+    val model =new BasePropsModel
+    import model._
+    (appelation --> name) := "name"
+    DirectSub(appelation) rem 0
+    
+  }
   it should "enable TypedModel definition with bindings to generic classes & properties" in pending
   it should "convert generic instance to typed instance and back" in (pending)
   
