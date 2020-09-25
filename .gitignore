@@ -12,3 +12,7 @@ bin
 .factorypath
 .settings
 logs
+.bloop
+.metals
+.vscode
+

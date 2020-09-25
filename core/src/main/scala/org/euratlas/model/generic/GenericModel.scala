@@ -346,6 +346,26 @@ import scala.collection.immutable.Seq
         case Remove(remIdx) => removePropRec(pa.propertyPath, remIdx)
       }
       
+      def allPropertiesAssertions(): Iterable[PropertyPathAssertion] =
+        propertiesMap.flatMap{
+          case (prop,values) if values.isEmpty => Nil
+          case (prop,values) if values.size == 1 =>
+            List(PropertyPathAssertion(Direct(prop),Set(values.head)))
+          case (prop,values) if values.size > 1 =>
+            values.zipWithIndex.map{case (v,idx) => PropertyPathAssertion(Direct(prop),Add(v))}
+        } ++
+        referencesMap.flatMap{
+          case (prop,values) if values.isEmpty => Nil
+          case (prop,values) if values.size == 1 =>
+            List(PropertyPathAssertion(DirectRef(prop),Set(values.head)))
+          case (prop,values) if values.size > 1 =>
+            values.zipWithIndex.map{case (v,idx) => PropertyPathAssertion(DirectRef(prop),Add(v))}
+        } ++ 
+        subEntitiesMap.flatMap{
+          case (prop,values)=>
+            values.flatMap(se => se.allPropertiesAssertions().map(pa => pa.copy(propertyPath = SubPath(prop,pa.propertyPath))))
+        } 
+      
       private def newSubEntity(prop:Property,idx:Option[Int])=GenericEntityInstance(Property.subEntityId(id,prop,idx),Map.empty,Map.empty,Map.empty)
       private def subEntity(prop:Property)=subEntitiesMap.get(prop).flatMap(_.headOption).getOrElse(newSubEntity(prop,None))
       private def updateSubEntity(prop:Property,update:GenericEntityInstance=>GenericEntityInstance)=

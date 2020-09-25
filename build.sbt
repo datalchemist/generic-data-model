@@ -2,10 +2,10 @@ import Dependencies._
 
 organization in ThisBuild := "org.euratlas"
 
-version in ThisBuild := "0.4.2-SNAPSHOT"
+version in ThisBuild := "0.4.3-SNAPSHOT"
 
 val scalaVersionClass = "2.12"
-val scalaVersionNum = "2.12.4"
+val scalaVersionNum = "2.12.10"
 val playJsonVersion = "2.6.8"
 
 scalaVersion in ThisBuild := scalaVersionNum
@@ -21,7 +21,6 @@ resolvers ++= Seq(
 lazy val core = //(project in file("generic-model")).
   crossProject.crossType(CrossType.Pure)
   .settings(
-    EclipseKeys.eclipseOutput := Some("eclipse_target"),
     name := "generic-data-model",
     libraryDependencies +=  "org.scalatest" %%% "scalatest" % "3.0.1" % Test,
     libraryDependencies +=  "org.scalacheck" %%% "scalacheck" % "1.13.4" % Test,
@@ -34,15 +33,11 @@ val genericModelJVM =
   core.jvm
   .settings(
     //name := "generic-data-model-jvm",
-    EclipseKeys.useProjectId := true,
-    EclipseKeys.eclipseOutput := Some("eclipse_target"),
   )
 val genericModelJS = 
   core.js
   .settings(
     //name := "generic-data-model-js",
-    EclipseKeys.useProjectId := true,
-    EclipseKeys.eclipseOutput := Some("eclipse_target"),
   )
 
 val `generic-model` =
