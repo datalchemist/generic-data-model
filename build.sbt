@@ -2,7 +2,7 @@ import Dependencies._
 
 organization in ThisBuild := "org.euratlas"
 
-version in ThisBuild := "0.4.3-SNAPSHOT"
+version in ThisBuild := "0.4.3"
 
 val scalaVersionClass = "2.12"
 val scalaVersionNum = "2.12.10"
